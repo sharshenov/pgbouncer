@@ -837,13 +837,16 @@ static void pause_cancel_request(PgSocket *client)
 /* wake client from wait */
 void activate_client(PgSocket *client)
 {
+	usec_t waited;
+
 	Assert(client->state == CL_WAITING || client->state == CL_WAITING_LOGIN);
 
 	Assert(client->wait_start > 0);
 
 	/* account for time client spent waiting for server */
-	client->pool->stats.wait_time += (get_cached_time() - client->wait_start);
-	qtags_account_wait(client, get_cached_time() - client->wait_start);
+	waited = get_cached_time() - client->wait_start;
+	client->pool->stats.wait_time += waited;
+	qtags_account_wait(client, waited);
 
 	slog_debug(client, "activate_client");
 	change_client_state(client, CL_ACTIVE);

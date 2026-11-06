@@ -1473,22 +1473,25 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
 		return false;
 	}
 
+	if (pkt->type == PqMsg_Query && cf_disable_pqexec) {
+		slog_error(client, "client used \"Query\" packet type");
+		disconnect_client(client, true, "PQexec disallowed");
+		return false;
+	}
+
+	switch (qtags_process_packet(client, pkt)) {
+	case QTAG_PKT_PARKED:
+		return false;	/* queued by its tag budget, packet pending */
+	case QTAG_PKT_CONSUMED:
+		skip_possibly_completely_buffered_packet(client, pkt);
+		return true;	/* rejected by its tag budget, packet consumed */
+	case QTAG_PKT_CONTINUE:
+		break;
+	}
+
 	switch (pkt->type) {
 	/* one-packet queries */
 	case PqMsg_Query:
-		if (cf_disable_pqexec) {
-			slog_error(client, "client used \"Query\" packet type");
-			disconnect_client(client, true, "PQexec disallowed");
-			return false;
-		}
-		switch (qtags_handle_query_packet(client, pkt)) {
-		case QTAG_PKT_CONSUMED:
-			return true;	/* rejected, packet consumed */
-		case QTAG_PKT_PARKED:
-			return false;	/* queued by tag budget, packet pending */
-		case QTAG_PKT_CONTINUE:
-			break;
-		}
 		track_outstanding = true;
 		break;
 	case PqMsg_FunctionCall:
@@ -1528,14 +1531,6 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
 	 * to buffer packets until sync or flush is sent by client
 	 */
 	case PqMsg_Parse:
-		switch (qtags_handle_parse_packet(client, pkt)) {
-		case QTAG_PKT_CONSUMED:
-			return true;	/* rejected, packet consumed */
-		case QTAG_PKT_PARKED:
-			return false;	/* queued by tag budget, packet pending */
-		case QTAG_PKT_CONTINUE:
-			break;
-		}
 		track_outstanding = true;
 		if (is_prepared_statements_enabled(client)) {
 			ps_action = inspect_parse_packet(client, pkt);
@@ -1560,14 +1555,6 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
 		if (is_prepared_statements_enabled(client)) {
 			ps_action = inspect_bind_packet(client, pkt);
 			pkt_rewind_v3(pkt);
-		}
-		switch (qtags_handle_bind_packet(client, pkt)) {
-		case QTAG_PKT_CONSUMED:
-			return true;	/* rejected, packet consumed */
-		case QTAG_PKT_PARKED:
-			return false;	/* queued by tag budget, packet pending */
-		case QTAG_PKT_CONTINUE:
-			break;
 		}
 		break;
 
@@ -1791,7 +1778,7 @@ static bool in_connection_startup_phase(PgSocket *client)
 
 
 /* dispatch a fully buffered packet, see process_pkt_callback() */
-bool client_handle_complete_packet(PgSocket *client, PktHdr *pkt)
+static bool client_handle_complete_packet(PgSocket *client, PktHdr *pkt)
 {
 	if (client->startup_message_received)
 		pkt_rewind_v3(pkt);
@@ -1801,6 +1788,18 @@ bool client_handle_complete_packet(PgSocket *client, PktHdr *pkt)
 	if (in_connection_startup_phase(client))
 		return handle_client_startup(client, pkt);
 	return handle_client_work(client, pkt);
+}
+
+/*
+ * Re-dispatch the packet that was fully buffered by the fetch machinery
+ * (see packet_cb_state) after a query tag budget wait. Returns false
+ * when the packet handler parked or disconnected the client again; the
+ * caller must then not touch the sbuf.
+ */
+bool client_resume_buffered_packet(PgSocket *client)
+{
+	return process_pkt_callback(client, &client->packet_cb_state.pkt.data,
+				    client_handle_complete_packet);
 }
 
 /* callback from SBuf */

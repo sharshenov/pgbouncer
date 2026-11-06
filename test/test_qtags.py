@@ -71,10 +71,15 @@ def test_tag_stats_ignores_unknown_keys(tagged_bouncer):
 
 
 def test_tag_stats_ignores_prose_comments(tagged_bouncer):
-    """Regular SQL comments are not tags, and only leading tags count."""
+    """
+    Regular SQL comments are not tags: a comment that is not entirely
+    key=value pairs records nothing, and only comments before any
+    statement text count.
+    """
     conn = tagged_bouncer.conn()
 
     conn.execute("/* payments report query */ SELECT 1")
+    conn.execute("/* team=web trace_id=xyz hello world */ SELECT 1")
     conn.execute("SELECT 2 /* team=payments */")
 
     assert len(tag_stats(tagged_bouncer)) == 0
@@ -169,26 +174,16 @@ def test_tag_budget_queueing(tagged_bouncer):
     # the small query has to queue roughly the drain time of the debt
     # above the burst limit, around 2s here
     start = time.monotonic()
-    conn.execute("/* team=payments */ SELECT 1")
+    cur = conn.execute("/* team=payments */ SELECT 42")
     elapsed = time.monotonic() - start
 
+    # queued, not failed
+    assert cur.fetchone()[0] == 42
     assert elapsed > 1.0
 
     rows = tag_budgets(tagged_bouncer)
     assert rows["payments"]["queued"] >= 1
     assert rows["payments"]["active"] == 0
-
-
-def test_tag_budget_queueing_transparent(tagged_bouncer):
-    """Queued queries get no error and no cancellation."""
-    tagged_bouncer.admin(
-        'TAG_BUDGET "SET payments share=50 burst=5 mode=enforce"')
-    conn = tagged_bouncer.conn()
-
-    conn.execute("/* team=payments */ SELECT pg_sleep(4)")
-
-    cur = conn.execute("/* team=payments */ SELECT 42")
-    assert cur.fetchone()[0] == 42
 
 
 def test_tag_budget_concurrency_limit(tagged_bouncer):
@@ -216,7 +211,7 @@ def test_tag_budget_concurrency_limit(tagged_bouncer):
     # the second query can only start after the first one finished, so
     # it takes the full 4s instead of 2.5s
     assert elapsed > 3.0
-    assert results["first"] == [(2,)]
+    assert results["first"] == [("",)]  # pg_sleep returns void
     rows = tag_budgets(tagged_bouncer)
     assert rows["payments"]["active"] == 0
 

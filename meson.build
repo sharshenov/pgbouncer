@@ -568,6 +568,8 @@ pgbouncer_sources = files(
   'src/prepare.c',
   'src/proto.c',
   'src/qtags.c',
+  'src/qtags_admin.c',
+  'src/qtags_budget.c',
   'src/sbuf.c',
   'src/scram.c',
   'src/server.c',

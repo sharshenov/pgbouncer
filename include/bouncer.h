@@ -797,7 +797,6 @@ struct PgSocket {
 	usec_t qtag_wait_since;		/* start of the current budget wait */
 	bool qtag_wait_buffered;	/* packet lives in packet_cb_state */
 
-
 	/* client: prepared statements prepared by this client */
 	PgClientPreparedStatement *client_prepared_statements;
 	/* server: prepared statements prepared on this server */

@@ -1,9 +1,17 @@
 # Query tag traffic control
 
 This document describes the query tag monitoring and traffic control
-feature (`src/qtags.c`, `include/qtags.h`). It covers the motivation,
-the data model, the queueing mechanics and the failure cases that shaped
-the implementation.
+feature. It covers the motivation, the data model, the queueing
+mechanics and the failure cases that shaped the implementation.
+
+The implementation is split over three files:
+
+- `src/qtags.c`: tag parsing, the packet dispatch hook and the per
+  tenant stats (`SHOW TAG_STATS`).
+- `src/qtags_budget.c`: the budget store, admission, and the wait queue
+  with its timer.
+- `src/qtags_admin.c`: the `[tag_budgets]` config section, the
+  `TAG_BUDGET` command and `SHOW TAG_BUDGETS`.
 
 ## Problem
 
@@ -37,10 +45,13 @@ SQLCommenter-style comment:
 Rules implemented by `qtags_parse()`:
 
 - Only a comment of the form `/* ... */` that consists solely of
-  `key=value` or `key:value` pairs counts as a tag comment. Prose
-  comments (`/* payments report query */`) and comments that appear
-  after the statement (`SELECT 1 /* team=x */`) are ignored. `/*+ ... */`
-  optimizer hints are skipped.
+  `key=value` or `key:value` pairs counts as a tag comment, and only
+  comments that appear before any statement text are parsed
+  (SQLCommenter places tags at the start). Prose comments
+  (`/* payments report query */`) and comments that appear after the
+  statement (`SELECT 1 /* team=x */`) are ignored. `/*+ ... */`
+  optimizer hints are skipped. A comment that stops being a tag list
+  partway through (`/* team=x trace_id=1 oops */`) records nothing.
 - The **tenant key** is configured with `query_tag_tenant_key`
   (e.g. `team`). A query without a value for that key is untagged.
 - **Secondary keys** are configured with `query_tag_keys` (e.g.
@@ -162,25 +173,30 @@ PgBouncer and re-run when the bucket has drained:
   (`sbuf_pause`) and appends it to a wait list. The current packet
   stays pending in the socket buffer; it is not consumed.
 - Waiters carry a deadline: the computed wait, capped by
-  `tag_budget_wait_timeout` (0 = unlimited). A deadline can never be
-  closer than `QTAG_MIN_WAIT_USEC` (10ms); waits that resolve by an
-  event (a slot freeing) are woken immediately by that event, and the
-  10ms floor only keeps the timer from spinning.
+  `tag_budget_wait_timeout` (0 = unlimited) counted from the start of
+  the whole queueing episode. A deadline can never be closer than
+  `QTAG_MIN_WAIT_USEC` (10ms); waits that resolve by an event (a slot
+  freeing) are woken immediately by that event, and the 10ms floor
+  only keeps the timer from spinning.
 - One shared libevent timer is armed for the earliest waiter deadline
-  (`arm_wait_timer`). When it fires, `qtag_timer_cb` wakes the due
+  (`arm_wait_timer`). When it fires, `qtag_timer_cb` walks the due
   waiters one by one; the flag `qtag_timer_armed` is cleared at the top
   of the callback because the one-shot event is no longer pending -
-  missing this causes re-parked clients to sleep forever.
+  missing this causes re-parked clients to sleep forever. The timer is
+  also the single place that enforces the wait timeout: a due waiter
+  that has queued longer than `tag_budget_wait_timeout` is
+  disconnected instead of woken.
 - A waiter is woken by three things: the timer, the tenant's budget
   being touched (`TAG_BUDGET SET/DEL/RESET`, config reload), or a
   concurrency slot being released for its tenant
-  (`qtags_wake_waiters_for_budget`).
+  (`qtags_budget_wake_tenant`).
 - `wake_client()` resumes the socket (`sbuf_continue`); the pending
   packet is re-delivered by the sbuf machinery and the whole admission
   check runs again from scratch. For packets that were fully buffered
   by the large-packet fetch path (`tag_budget_wait_buffered`), the
-  packet is re-dispatched directly via `client_handle_complete_packet()`
-  instead, mirroring the normal completion path.
+  packet is re-dispatched through `process_pkt_callback()` via
+  `client_resume_buffered_packet()` in `client.c`, which keeps the
+  packet callback state machine in one place.
 - When the deadline passes, the client is disconnected with
   `query waited N s for the '<tenant>' tag budget, aborting`. This is
   the only timeout that produces an error, and it is off by default.
@@ -206,14 +222,18 @@ computation). Consequences worth knowing:
 
 ## Interaction with PgBouncer internals
 
-- `handle_client_work()` inspects the packet *before* it is forwarded.
-  The hooks return a three-way result: `CONTINUE` (process normally),
-  `CONSUMED` (rejected; the packet is skipped with
+- `handle_client_work()` calls the single dispatch hook
+  `qtags_process_packet()` before the packet is forwarded. The hook
+  returns a three-way result: `CONTINUE` (process normally),
+  `CONSUMED` (rejected; `client.c` skips the packet with
   `skip_possibly_completely_buffered_packet()`) and `PARKED` (the
   client was parked; return `false` so the sbuf keeps the packet
   pending). Conflating "consumed" and "parked" causes the packet to be
   forwarded to the server anyway and spins the sbuf state machine.
-- `qtags_clear()` (called on every re-parse) preserves
+- Admission runs once per batch: `qtags_budget_admit()` ignores
+  packets while `query_start != 0`, because a mid-batch re-check would
+  deadlock against the batch's own concurrency slot.
+- `qtags_clear_tags()` (called on every re-parse) preserves
   `active_tenant`, the client's booked slot, because the slot is
   released only when the batch completes. Wiping it leaks concurrency
   slots.

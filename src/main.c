@@ -389,9 +389,6 @@ static const struct CfKey bouncer_params [] = {
 	{NULL}
 };
 
-/* parse a [tag_budgets] section entry: tenant = share=25 burst=60 ... */
-static bool parse_tag_budget(void *base, const char *tenant, const char *params);
-
 static const struct CfSect config_sects [] = {
 	{
 		.sect_name = "pgbouncer",
@@ -407,7 +404,7 @@ static const struct CfSect config_sects [] = {
 		.set_key = parse_peer,
 	}, {
 		.sect_name = "tag_budgets",
-		.set_key = parse_tag_budget,
+		.set_key = qtags_parse_tag_budget,
 	}, {
 		.sect_name = NULL,
 	}
@@ -480,12 +477,6 @@ static bool requires_auth_file(int auth_type)
 	if (auth_type == AUTH_TYPE_PAM)
 		return false;
 	return auth_type >= AUTH_TYPE_TRUST;
-}
-
-/* parse a [tag_budgets] section entry: tenant = share=25 burst=60 ... */
-static bool parse_tag_budget(void *base, const char *tenant, const char *params)
-{
-	return qtags_budget_from_config(tenant, params);
 }
 
 /* config loading, tries to be tolerant to errors */
