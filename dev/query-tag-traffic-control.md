@@ -192,11 +192,15 @@ PgBouncer and re-run when the bucket has drained:
   (`qtags_budget_wake_tenant`).
 - `wake_client()` resumes the socket (`sbuf_continue`); the pending
   packet is re-delivered by the sbuf machinery and the whole admission
-  check runs again from scratch. For packets that were fully buffered
-  by the large-packet fetch path (`tag_budget_wait_buffered`), the
-  packet is re-dispatched through `process_pkt_callback()` via
-  `client_resume_buffered_packet()` in `client.c`, which keeps the
-  packet callback state machine in one place.
+  check runs again from scratch. This covers both pending small
+  packets (replayed via `SBUF_EV_READ`) and packets that were fully
+  buffered by the large-packet fetch path (replayed via the
+  `SBUF_EV_PKT_CALLBACK` / `process_pkt_callback` flow, which keeps
+  the sbuf's fetch state consistent). Do not re-dispatch a buffered
+  packet by calling `process_pkt_callback` directly from the wake
+  path: the follow-up sbuf resume would replay the already-consumed
+  packet into a reset callback state and hit
+  "BUG: unknown packet callback flag".
 - When the deadline passes, the client is disconnected with
   `query waited N s for the '<tenant>' tag budget, aborting`. This is
   the only timeout that produces an error, and it is off by default.

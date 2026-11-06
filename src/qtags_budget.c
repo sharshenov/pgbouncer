@@ -76,6 +76,42 @@ struct TagBudget *qtags_find_budget(const char *tenant)
 	return b;
 }
 
+/* fresh limits: everything inherits the global config */
+void qtags_budget_defaults(struct TagBudget *b)
+{
+	memset(b, 0, sizeof(*b));
+	b->share_pct = -1;
+	b->burst_sec = -1;
+	b->per_query_ms = -1;
+	b->concurrency = -1;
+	b->mode = -1;
+}
+
+/*
+ * Create a budget with default (inheriting) limits and insert it into
+ * the map and the LRU. Returns NULL on OOM.
+ */
+struct TagBudget *qtags_budget_new(const char *tenant)
+{
+	struct TagBudget *b = calloc(1, sizeof(*b));
+
+	if (!b)
+		return NULL;
+	qtags_budget_defaults(b);
+	strlcpy(b->tenant, tenant, sizeof(b->tenant));
+	HASH_ADD_STR(tag_budget_map, tenant, b);
+	statlist_prepend(&tag_budget_lru, &b->lru);
+	return b;
+}
+
+/* remove a budget from the map and the LRU, then free it */
+void qtags_budget_destroy(struct TagBudget *b)
+{
+	HASH_DELETE(hh, tag_budget_map, b);
+	statlist_remove(&tag_budget_lru, &b->lru);
+	free(b);
+}
+
 /* resolve a budget parameter: per budget value, else the global config */
 int qtags_budget_share_pct(struct TagBudget *b)
 {
@@ -122,37 +158,23 @@ static void tag_budget_lru_touch(struct TagBudget *b)
 }
 
 /*
- * Create an empty runtime bucket for a tenant, evicting the least
+ * Create an empty runtime budget for a tenant, evicting the least
  * recently used one when over the entry cap. Returns NULL on OOM.
  */
 static struct TagBudget *create_budget(const char *tenant)
 {
-	struct TagBudget *b;
-
 	if (cf_tag_budget_max_entries > 0
 	    && HASH_COUNT(tag_budget_map) >= (unsigned)cf_tag_budget_max_entries) {
 		struct List *item = statlist_last(&tag_budget_lru);
 
 		if (item) {
-			b = container_of(item, struct TagBudget, lru);
-			HASH_DELETE(hh, tag_budget_map, b);
-			statlist_remove(&tag_budget_lru, &b->lru);
-			free(b);
+			struct TagBudget *old = container_of(item, struct TagBudget, lru);
+
+			qtags_budget_destroy(old);
 		}
 	}
 
-	b = calloc(1, sizeof(*b));
-	if (!b)
-		return NULL;
-	strlcpy(b->tenant, tenant, sizeof(b->tenant));
-	b->share_pct = -1;
-	b->burst_sec = -1;
-	b->per_query_ms = -1;
-	b->concurrency = -1;
-	b->mode = -1;
-	HASH_ADD_STR(tag_budget_map, tenant, b);
-	statlist_prepend(&tag_budget_lru, &b->lru);
-	return b;
+	return qtags_budget_new(tenant);
 }
 
 /*
@@ -349,23 +371,25 @@ static void disarm_wait_timer(void)
 }
 
 /*
- * Resume a client whose packet is still pending in the sbuf read buffer.
- * The packet is re-parsed from scratch, so the whole admission check
- * runs again.
+ * Resume a client whose packet is still pending in the sbuf read
+ * buffer. The packet is re-parsed from scratch, so the whole admission
+ * check runs again: the sbuf replays pending packets (plain ones via
+ * SBUF_EV_READ, fetched large ones via the packet callback state
+ * machine), which re-enters the qtags dispatch with the sbuf in its
+ * normal handling flow.
  */
-static void wake_client(PgSocket *client)
+static void resume_waiter(PgSocket *client)
 {
-	bool buffered = client->qtag_wait_buffered;
-
 	client->qtag_wait_deadline = 0;
-	client->qtag_wait_buffered = false;
-	statlist_remove(&tag_waiters, &client->qtag_wait);
-
-	if (buffered && !client_resume_buffered_packet(client))
-		return;		/* queued again or disconnected */
 
 	if (client->state == CL_ACTIVE)
 		sbuf_continue(&client->sbuf);
+}
+
+static void wake_client(PgSocket *client)
+{
+	statlist_remove(&tag_waiters, &client->qtag_wait);
+	resume_waiter(client);
 }
 
 /* wake the single oldest waiter of a budget (called when a slot frees) */
@@ -403,9 +427,7 @@ void qtags_budget_wake_waiters(void)
 	while ((item = statlist_pop(&tmp)) != NULL) {
 		PgSocket *client = container_of(item, PgSocket, qtag_wait);
 
-		client->qtag_wait_deadline = 0;
-		client->qtag_wait_buffered = false;
-		sbuf_continue(&client->sbuf);
+		resume_waiter(client);
 	}
 	disarm_wait_timer();
 }
@@ -428,7 +450,6 @@ static void timeout_waiter(PgSocket *client)
 		 (int)(cf_tag_budget_wait_timeout / USEC), client->qtags.tenant);
 	log_warning("disconnecting client: %s", msg);
 	client->qtag_wait_deadline = 0;
-	client->qtag_wait_buffered = false;
 	statlist_remove(&tag_waiters, &client->qtag_wait);
 	disconnect_client(client, true, "%s", msg);
 }
@@ -496,8 +517,6 @@ enum QTagPacketAction qtags_budget_park(PgSocket *client, usec_t wait_us)
 			deadline = max_deadline;
 	}
 
-	client->qtag_wait_buffered =
-		(client->packet_cb_state.flag == CB_HANDLE_COMPLETE_PACKET);
 	if (!client->qtag_wait_since)
 		client->qtag_wait_since = now;
 	statlist_append(&tag_waiters, &client->qtag_wait);
@@ -506,7 +525,6 @@ enum QTagPacketAction qtags_budget_park(PgSocket *client, usec_t wait_us)
 	if (!sbuf_pause(&client->sbuf)) {
 		statlist_remove(&tag_waiters, &client->qtag_wait);
 		client->qtag_wait_deadline = 0;
-		client->qtag_wait_buffered = false;
 		disconnect_client(client, true, "query tag budget pause failed");
 		return QTAG_PKT_CONSUMED;
 	}

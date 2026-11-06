@@ -51,6 +51,11 @@
  * Aggregated stats for one (database, tenant, secondary tag) combination.
  * Times are cumulative microseconds, same units as SHOW STATS.
  */
+
+/* size of the packed (db, tenant, sec_key, sec_value) hash key */
+#define QTAG_STATS_KEYLEN \
+	((MAX_DBNAME + 1) + (QTAG_MAX_VALUE + 1) + (QTAG_MAX_KEY + 1) + (QTAG_MAX_VALUE + 1))
+
 struct TagStats {
 	UT_hash_handle hh;
 	struct List lru;		/* in tag_stats_lru, most recent first */
@@ -60,7 +65,7 @@ struct TagStats {
 	 * byte string. The key must live in a packed buffer, because uthash
 	 * compares the raw bytes at the stored key pointer.
 	 */
-	char hkey[(MAX_DBNAME + 1) + (QTAG_MAX_VALUE + 1) + (QTAG_MAX_KEY + 1) + (QTAG_MAX_VALUE + 1)];
+	char hkey[QTAG_STATS_KEYLEN];
 	size_t hkeylen;
 
 	/* values */
@@ -349,24 +354,26 @@ bool qtags_inspect_needed(int pkt_type)
  */
 enum QTagPacketAction qtags_process_packet(PgSocket *client, PktHdr *pkt)
 {
-	const char *query = NULL;
-
 	if (!qtags_feature_enabled() || client->pool->db->admin)
 		return QTAG_PKT_CONTINUE;
 
 	switch (pkt->type) {
-	const char *name, *stmt, *portal;
-	bool ok;
+	case PqMsg_Query: {
+		const char *query;
+		bool ok;
 
-	case PqMsg_Query:
 		ok = mbuf_get_string(&pkt->data, &query);
 		pkt_rewind_v3(pkt);
 		if (!ok)
 			return QTAG_PKT_CONTINUE;
 		qtags_parse(client, query);
 		break;
+	}
 
-	case PqMsg_Parse:
+	case PqMsg_Parse: {
+		const char *name, *query;
+		bool ok;
+
 		ok = mbuf_get_string(&pkt->data, &name);
 		if (ok)
 			ok = mbuf_get_string(&pkt->data, &query);
@@ -375,16 +382,29 @@ enum QTagPacketAction qtags_process_packet(PgSocket *client, PktHdr *pkt)
 			return QTAG_PKT_CONTINUE;
 		qtags_parse(client, query);
 		break;
+	}
 
-	case PqMsg_Bind:
+	case PqMsg_Bind: {
 		/*
 		 * For named statements the tags have to come from the
 		 * stored query text, because the Parse packet only flies
 		 * by once. Unnamed statements keep the tags of the Parse
 		 * packet that is still in flight on this client.
 		 */
-		if (!is_prepared_statements_enabled(client) || incomplete_pkt(pkt))
+		const char *portal, *stmt, *query;
+		bool ok;
+
+		if (!is_prepared_statements_enabled(client))
 			break;
+
+		/*
+		 * With prepared statements enabled the caller fully buffers
+		 * Bind packets before dispatch, so this is defensive. The
+		 * batch was already admitted on the Parse packet's tags, so
+		 * skip admission instead of re-running it on stale state.
+		 */
+		if (incomplete_pkt(pkt))
+			return QTAG_PKT_CONTINUE;
 
 		ok = mbuf_get_string(&pkt->data, &portal);
 		if (ok)
@@ -405,6 +425,7 @@ enum QTagPacketAction qtags_process_packet(PgSocket *client, PktHdr *pkt)
 			qtags_clear_tags(client);
 		}
 		break;
+	}
 
 	default:
 		return QTAG_PKT_CONTINUE;
@@ -424,15 +445,20 @@ static enum QTagPacketAction admit_packet(PgSocket *client, PktHdr *pkt)
 
 	decision = qtags_budget_admit(client, &wait_needed);
 
+	/*
+	 * Every decision but WAIT ends the queueing episode: account the
+	 * time the batch spent waiting for its budget, wherever the batch
+	 * ends up (allowed, warned, or rejected).
+	 */
+	if (client->qtag_wait_since && decision != QTAG_WAIT) {
+		usec_t waited = get_cached_time() - client->qtag_wait_since;
+
+		client->qtag_wait_since = 0;
+		qtags_account_budget_wait(client, waited);
+	}
+
 	switch (decision) {
 	case QTAG_ALLOW:
-		if (client->qtag_wait_since) {
-			/* the batch waited for its budget: account the time */
-			usec_t waited = get_cached_time() - client->qtag_wait_since;
-
-			client->qtag_wait_since = 0;
-			qtags_account_budget_wait(client, waited);
-		}
 		return QTAG_PKT_CONTINUE;
 
 	case QTAG_WARN:
@@ -440,7 +466,6 @@ static enum QTagPacketAction admit_packet(PgSocket *client, PktHdr *pkt)
 		return QTAG_PKT_CONTINUE;
 
 	case QTAG_REJECT:
-		client->qtag_wait_since = 0;
 		send_budget_rejection(client);
 
 		/*
@@ -523,7 +548,7 @@ static void tag_stats_lru_touch(struct TagStats *s)
 static struct TagStats *get_stats_entry(PgSocket *client)
 {
 	struct TagStats *s;
-	char key[(MAX_DBNAME + 1) + (QTAG_MAX_VALUE + 1) + (QTAG_MAX_KEY + 1) + (QTAG_MAX_VALUE + 1)];
+	char key[QTAG_STATS_KEYLEN];
 	size_t len;
 
 	if (!qtags_feature_enabled())

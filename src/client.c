@@ -1790,18 +1790,6 @@ static bool client_handle_complete_packet(PgSocket *client, PktHdr *pkt)
 	return handle_client_work(client, pkt);
 }
 
-/*
- * Re-dispatch the packet that was fully buffered by the fetch machinery
- * (see packet_cb_state) after a query tag budget wait. Returns false
- * when the packet handler parked or disconnected the client again; the
- * caller must then not touch the sbuf.
- */
-bool client_resume_buffered_packet(PgSocket *client)
-{
-	return process_pkt_callback(client, &client->packet_cb_state.pkt.data,
-				    client_handle_complete_packet);
-}
-
 /* callback from SBuf */
 bool client_proto(SBuf *sbuf, SBufEvent evtype, struct MBuf *data)
 {

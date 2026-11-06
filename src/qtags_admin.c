@@ -45,6 +45,79 @@ const struct CfLookup tag_budget_mode_map[] = {
 	{ NULL, 0 },
 };
 
+/* the numeric [tag_budgets] parameters and their upper bounds */
+enum BudgetParam {
+	PARAM_SHARE,
+	PARAM_BURST,
+	PARAM_PER_QUERY_MS,
+	PARAM_CONCURRENCY,
+};
+
+static const struct BudgetParamDef {
+	const char *key;
+	int max;
+} budget_param_defs[] = {
+	[PARAM_SHARE]	       = { "share",        10000 },
+	[PARAM_BURST]	       = { "burst",         3600 },
+	[PARAM_PER_QUERY_MS]	   = { "per_query_ms", 3600000 },
+	[PARAM_CONCURRENCY]    = { "concurrency", 1000000 },
+};
+
+static int find_budget_param(const char *key)
+{
+	int i;
+
+	for (i = 0; i < (int)(sizeof(budget_param_defs) / sizeof(budget_param_defs[0])); i++) {
+		if (strcmp(key, budget_param_defs[i].key) == 0)
+			return i;
+	}
+	return -1;
+}
+
+/* store one numeric parameter; all limit fields are "0 = off" ints */
+static bool apply_budget_param(struct TagBudget *newb, int param, const char *val)
+{
+	char *endp;
+	int v = strtol(val, &endp, 10);
+
+	if (endp == val || *endp || v < 0 || v > budget_param_defs[param].max)
+		return false;
+
+	switch (param) {
+	case PARAM_SHARE:
+		newb->share_pct = v;
+		break;
+	case PARAM_BURST:
+		newb->burst_sec = v;
+		break;
+	case PARAM_PER_QUERY_MS:
+		newb->per_query_ms = v;
+		break;
+	case PARAM_CONCURRENCY:
+		newb->concurrency = v;
+		break;
+	}
+	return true;
+}
+
+/* parse the mode= value; "inherit" resets to the global config */
+static bool apply_budget_mode(struct TagBudget *newb, const char *val)
+{
+	const struct CfLookup *l;
+
+	if (strcasecmp(val, "inherit") == 0) {
+		newb->mode = -1;
+		return true;
+	}
+	for (l = tag_budget_mode_map; l->name; l++) {
+		if (strcasecmp(l->name, val) == 0) {
+			newb->mode = l->value;
+			return true;
+		}
+	}
+	return false;
+}
+
 /*
  * Parse "share=25 burst=60 mode=enforce" style parameters for a tenant
  * from the [tag_budgets] config section. Parameters are validated before
@@ -68,12 +141,7 @@ bool qtags_parse_tag_budget(void *base, const char *tenant, const char *params)
 	if (b) {
 		newb = *b;
 	} else {
-		memset(&newb, 0, sizeof(newb));
-		newb.share_pct = -1;
-		newb.burst_sec = -1;
-		newb.per_query_ms = -1;
-		newb.concurrency = -1;
-		newb.mode = -1;
+		qtags_budget_defaults(&newb);
 	}
 
 	dup = strdup(params ? params : "");
@@ -83,7 +151,7 @@ bool qtags_parse_tag_budget(void *base, const char *tenant, const char *params)
 	for (tok = strtok_r(dup, " \t", &saveptr); tok; tok = strtok_r(NULL, " \t", &saveptr)) {
 		char *eq = strchr(tok, '=');
 		const char *key, *val;
-		char *endp;
+		int param;
 
 		if (!eq) {
 			log_error("bad [tag_budgets] entry for %s: expected key=value, got '%s'",
@@ -95,60 +163,23 @@ bool qtags_parse_tag_budget(void *base, const char *tenant, const char *params)
 		key = tok;
 		val = eq + 1;
 
-		if (strcmp(key, "share") == 0) {
-			int v = strtol(val, &endp, 10);
-
-			if (endp == val || *endp || v < 0 || v > 10000) {
-				log_error("bad share '%s' for [tag_budgets] %s", val, tenant);
-				free(dup);
-				return false;
-			}
-			newb.share_pct = v;
-		} else if (strcmp(key, "burst") == 0) {
-			int v = strtol(val, &endp, 10);
-
-			if (endp == val || *endp || v < 0 || v > 3600) {
-				log_error("bad burst '%s' for [tag_budgets] %s", val, tenant);
-				free(dup);
-				return false;
-			}
-			newb.burst_sec = v;
-		} else if (strcmp(key, "per_query_ms") == 0) {
-			int v = strtol(val, &endp, 10);
-
-			if (endp == val || *endp || v < 0 || v > 3600000) {
-				log_error("bad per_query_ms '%s' for [tag_budgets] %s", val, tenant);
-				free(dup);
-				return false;
-			}
-			newb.per_query_ms = v;
-		} else if (strcmp(key, "concurrency") == 0) {
-			int v = strtol(val, &endp, 10);
-
-			if (endp == val || *endp || v < 0 || v > 1000000) {
-				log_error("bad concurrency '%s' for [tag_budgets] %s", val, tenant);
-				free(dup);
-				return false;
-			}
-			newb.concurrency = v;
-		} else if (strcmp(key, "mode") == 0) {
-			if (strcasecmp(val, "inherit") == 0) {
-				newb.mode = -1;
-				continue;
-			}
-			for (const struct CfLookup *l = tag_budget_mode_map; l->name; l++) {
-				if (strcasecmp(l->name, val) == 0) {
-					newb.mode = l->value;
-					break;
-				}
-			}
-			if (newb.mode < 0) {
+		if (strcmp(key, "mode") == 0) {
+			if (!apply_budget_mode(&newb, val)) {
 				log_error("bad mode '%s' for [tag_budgets] %s", val, tenant);
 				free(dup);
 				return false;
 			}
-		} else {
+			continue;
+		}
+
+		param = find_budget_param(key);
+		if (param < 0) {
 			log_error("unknown key '%s' in [tag_budgets] for %s", key, tenant);
+			free(dup);
+			return false;
+		}
+		if (!apply_budget_param(&newb, param, val)) {
+			log_error("bad %s '%s' for [tag_budgets] %s", key, val, tenant);
 			free(dup);
 			return false;
 		}
@@ -156,12 +187,9 @@ bool qtags_parse_tag_budget(void *base, const char *tenant, const char *params)
 	free(dup);
 
 	if (!b) {
-		b = calloc(1, sizeof(*b));
+		b = qtags_budget_new(tenant);
 		if (!b)
 			return false;
-		strlcpy(b->tenant, tenant, sizeof(b->tenant));
-		HASH_ADD_STR(tag_budget_map, tenant, b);
-		statlist_prepend(&tag_budget_lru, &b->lru);
 	}
 	b->share_pct = newb.share_pct;
 	b->burst_sec = newb.burst_sec;
@@ -190,11 +218,8 @@ void qtags_config_sweep(void)
 	struct TagBudget *b, *tmp;
 
 	HASH_ITER (hh, tag_budget_map, b, tmp) {
-		if (b->from_config && b->dead) {
-			HASH_DELETE(hh, tag_budget_map, b);
-			statlist_remove(&tag_budget_lru, &b->lru);
-			free(b);
-		}
+		if (b->from_config && b->dead)
+			qtags_budget_destroy(b);
 	}
 	qtags_budget_wake_waiters();
 }
@@ -252,9 +277,7 @@ bool qtags_admin_budget_cmd(PgSocket *admin, const char *arg)
 		b = qtags_find_budget(tenant);
 		if (!b)
 			return admin_error(admin, "no budget for tenant: %s", tenant);
-		HASH_DELETE(hh, tag_budget_map, b);
-		statlist_remove(&tag_budget_lru, &b->lru);
-		free(b);
+		qtags_budget_destroy(b);
 		qtags_budget_wake_waiters();
 		log_info("TAG_BUDGET DEL %s", tenant);
 		return admin_ready(admin, "TAG_BUDGET");

@@ -145,6 +145,15 @@ extern struct StatList tag_budget_lru;
 
 struct TagBudget *qtags_find_budget(const char *tenant);
 
+/* fresh limits where every field inherits the global config */
+void qtags_budget_defaults(struct TagBudget *b);
+
+/* create a budget with default limits, inserted into the map and LRU */
+struct TagBudget *qtags_budget_new(const char *tenant);
+
+/* remove a budget from the map and the LRU, then free it */
+void qtags_budget_destroy(struct TagBudget *b);
+
 /* resolve a budget parameter: per budget value, else the global config */
 int qtags_budget_share_pct(struct TagBudget *b);
 int qtags_budget_burst_sec(struct TagBudget *b);
