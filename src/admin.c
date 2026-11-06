@@ -1329,31 +1329,43 @@ static bool copy_arg(const char *src, regmatch_t *glist,
 
 static bool admin_show_help(PgSocket *admin, const char *arg)
 {
-	bool res;
-	SEND_generic(res, admin, PqMsg_NoticeResponse,
-		     "sssss",
-		     "SNOTICE", "C00000", "MConsole usage",
-		     "D\n\tSHOW HELP|CONFIG|DATABASES"
-		     "|POOLS|CLIENTS|SERVERS|USERS|VERSION\n"
-		     "\tSHOW PEERS|PEER_POOLS\n"
-		     "\tSHOW SOCKETS|ACTIVE_SOCKETS|LISTS|MEM|STATE\n"
-		     "\tSHOW DNS_HOSTS|DNS_ZONES\n"
-		     "\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|TOTALS\n"
-		     "\tSET key = arg\n"
-		     "\tRELOAD\n"
-		     "\tPAUSE [<db>]\n"
-		     "\tRESUME [<db>]\n"
-		     "\tDISABLE <db>\n"
-		     "\tENABLE <db>\n"
-		     "\tRECONNECT [<db>]\n"
-		     "\tKILL [<db>]\n"
-		     "\tKILL_CLIENT <client_id>\n"
-		     "\tSHUTDOWN\n"
-		     "\tSHUTDOWN WAIT_FOR_SERVERS|WAIT_FOR_CLIENTS\n"
-		     "\tWAIT_CLOSE [<db>]", "");
-	if (res)
-		res = admin_ready(admin, "SHOW");
-	return res;
+	PktBuf *buf;
+
+	/* the help text is too long for the static buffer in SEND_generic */
+	buf = pktbuf_dynamic(1280);
+	if (!buf) {
+		admin_error(admin, "no mem");
+		return true;
+	}
+
+	pktbuf_write_generic(buf, PqMsg_NoticeResponse,
+			     "sssss",
+			     "SNOTICE", "C00000", "MConsole usage",
+			     "D\n\tSHOW HELP|CONFIG|DATABASES"
+			     "|POOLS|CLIENTS|SERVERS|USERS|VERSION\n"
+			     "\tSHOW PEERS|PEER_POOLS\n"
+			     "\tSHOW SOCKETS|ACTIVE_SOCKETS|LISTS|MEM|STATE\n"
+			     "\tSHOW DNS_HOSTS|DNS_ZONES\n"
+			     "\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|TOTALS\n"
+			     "\tSHOW TAG_STATS|TAG_BUDGETS\n"
+			     "\tTAG_BUDGET SET <tenant> [share=N] [burst=S] [mode=off|warn|enforce]\n"
+			     "\tTAG_BUDGET DEL <tenant>\n"
+			     "\tTAG_BUDGET RESET <tenant>\n"
+			     "\tSET key = arg\n"
+			     "\tRELOAD\n"
+			     "\tPAUSE [<db>]\n"
+			     "\tRESUME [<db>]\n"
+			     "\tDISABLE <db>\n"
+			     "\tENABLE <db>\n"
+			     "\tRECONNECT [<db>]\n"
+			     "\tKILL [<db>]\n"
+			     "\tKILL_CLIENT <client_id>\n"
+			     "\tSHUTDOWN\n"
+			     "\tSHUTDOWN WAIT_FOR_SERVERS|WAIT_FOR_CLIENTS\n"
+			     "\tWAIT_CLOSE [<db>]", "");
+	admin_flush(admin, buf, "SHOW");
+
+	return true;
 }
 
 static bool admin_show_version(PgSocket *admin, const char *arg)
@@ -1394,6 +1406,21 @@ static bool admin_show_totals(PgSocket *admin, const char *arg)
 	return show_stat_totals(admin, &pool_list);
 }
 
+static bool admin_show_tag_stats(PgSocket *admin, const char *arg)
+{
+	return qtags_show_tag_stats(admin);
+}
+
+static bool admin_show_tag_budgets(PgSocket *admin, const char *arg)
+{
+	return qtags_show_tag_budgets(admin);
+}
+
+static bool admin_cmd_tag_budget(PgSocket *admin, const char *arg)
+{
+	return qtags_admin_budget_cmd(admin, arg);
+}
+
 
 static struct cmd_lookup show_map [] = {
 	{"clients", admin_show_clients},
@@ -1410,6 +1437,8 @@ static struct cmd_lookup show_map [] = {
 	{"stats", admin_show_stats},
 	{"stats_totals", admin_show_stats_totals},
 	{"stats_averages", admin_show_stats_averages},
+	{"tag_stats", admin_show_tag_stats},
+	{"tag_budgets", admin_show_tag_budgets},
 	{"users", admin_show_users},
 	{"version", admin_show_version},
 	{"totals", admin_show_totals},
@@ -1439,6 +1468,7 @@ static struct cmd_lookup cmd_list [] = {
 	{"select", admin_cmd_show},
 	{"show", admin_cmd_show},
 	{"shutdown", admin_cmd_shutdown},
+	{"tag_budget", admin_cmd_tag_budget},
 	{"wait_close", admin_cmd_wait_close},
 	{NULL, NULL}
 };
@@ -1448,7 +1478,7 @@ static bool admin_parse_query(PgSocket *admin, const char *q)
 {
 	regmatch_t grp[MAX_GROUPS];
 	char cmd[16];
-	char arg[64];
+	char arg[256];
 	char val[256];
 	bool res;
 	bool ok;

@@ -843,6 +843,7 @@ void activate_client(PgSocket *client)
 
 	/* account for time client spent waiting for server */
 	client->pool->stats.wait_time += (get_cached_time() - client->wait_start);
+	qtags_account_wait(client, get_cached_time() - client->wait_start);
 
 	slog_debug(client, "activate_client");
 	change_client_state(client, CL_ACTIVE);
@@ -1475,6 +1476,9 @@ void disconnect_client(PgSocket *client, bool notify, const char *reason, ...)
 void disconnect_client_sqlstate(PgSocket *client, bool notify, const char *sqlstate, const char *reason)
 {
 	usec_t now = get_cached_time();
+
+	/* give back the query tag budget concurrency slot, if one is held */
+	qtags_client_release(client);
 
 	if (client->db && client->contributes_db_client_count)
 		client->db->client_connection_count--;

@@ -647,6 +647,7 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 						total = get_cached_time() - client->query_start;
 						client->query_start = 0;
 						server->pool->stats.query_time += total;
+						qtags_account_query(client, total);
 						slog_debug(client, "query time: %d us", (int)total);
 					} else if (!async_response) {
 						slog_warning(client, "FIXME: query end, but query_start == 0");
@@ -661,6 +662,7 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 						total = get_cached_time() - client->xact_start;
 						client->xact_start = 0;
 						server->pool->stats.xact_time += total;
+						qtags_account_xact(client, total);
 						slog_debug(client, "transaction time: %d us", (int)total);
 					} else if (!async_response) {
 						slog_warning(client, "FIXME: transaction end, but xact_start == 0");

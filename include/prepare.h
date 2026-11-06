@@ -40,6 +40,9 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt);
 bool handle_describe_command(PgSocket *client, PktHdr *pkt);
 bool handle_close_statement_command(PgSocket *client, PktHdr *pkt, PgClosePacket *close_packet);
 
+const char *get_prepared_statement_query(PgSocket *client, const char *stmt_name);
+void skip_possibly_completely_buffered_packet(PgSocket *client, PktHdr *pkt);
+
 void free_server_prepared_statement(PgServerPreparedStatement *server_ps);
 void unregister_prepared_statement(PgSocket *server, uint64_t query_id);
 bool add_prepared_statement(PgSocket *server, PgServerPreparedStatement *server_ps) _MUSTCHECK;

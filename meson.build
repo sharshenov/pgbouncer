@@ -567,6 +567,7 @@ pgbouncer_sources = files(
   'src/pooler.c',
   'src/prepare.c',
   'src/proto.c',
+  'src/qtags.c',
   'src/sbuf.c',
   'src/scram.c',
   'src/server.c',

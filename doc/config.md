@@ -1072,6 +1072,100 @@ and lower see `client_tls_ciphers`.
 Default: `<empty>`
 
 
+## Query tag settings
+
+PgBouncer can identify which tenant (team, workload) a query belongs to
+from a SQLCommenter style comment in the SQL, monitor the database wall
+time that tenant consumes and, when budgets are configured, queue or
+reject queries of tenants that go over their budget. See
+`dev/query-tag-traffic-control.md` in the source distribution for the
+full design.
+
+Tags are comments of the form `/* team=payments action=checkout */`
+prefixed to the statement. Only comments that consist entirely of
+`key=value` pairs count as tags; other comments are ignored. Unknown
+keys are ignored, so high cardinality data such as trace ids cannot
+grow the statistics.
+
+When no tenant key is configured and no budgets exist, the feature is
+inert.
+
+### query_tag_tenant_key
+
+The tag key that identifies the tenant, e.g. `team`. Queries without a
+value for this key are untagged and are never monitored or throttled.
+
+Default: `<empty>` (feature disabled)
+
+### query_tag_keys
+
+Comma separated list of secondary tag keys, e.g.
+`action,sidekiq,mailer`. Only the first matching key is tracked, so
+monitoring can break a tenant down by workload. Leave empty to only
+track the tenant.
+
+Default: `<empty>`
+
+### tag_budget_mode
+
+Default mode for tenants without an explicit budget: `off` (monitoring
+only), `warn` (queue nothing, but log a warning and notify the client
+when the budget is exceeded) or `enforce` (queue or reject queries that
+exceed the budget). Tenants with a budget use the mode configured for
+them.
+
+Default: off
+
+### tag_budget_share
+
+Default drain rate: the percentage of one database-second that a
+tenant's bucket drains per wall second. A share of 25 means a tenant
+that keeps the database busy continuously may use at most 25% of the
+database time.
+
+Default: 100
+
+### tag_budget_burst
+
+Default bucket capacity in database-seconds. This is the amount of
+database time a tenant can spend ahead of its share before queries are
+queued. 0 disables the bucket limit.
+
+Default: 0
+
+### tag_budget_per_query_ms
+
+Default per-query limit in milliseconds. Queries whose estimated cost
+exceeds it are queued (`warn`) or rejected (`enforce`). 0 disables.
+
+Default: 0
+
+### tag_budget_concurrency
+
+Default maximum number of simultaneously in-flight queries per tenant.
+Queries above the limit are queued. 0 disables.
+
+Default: 0
+
+### tag_budget_max_entries
+
+Maximum number of tenants tracked for monitoring and budgeting. When
+the limit is reached, the least recently active entries are evicted.
+This bounds the memory that untrusted tag values can allocate.
+
+Default: 1000
+
+### tag_budget_wait_timeout
+
+Maximum time a query may spend queued for a tag budget. If the budget
+has not drained within that time, the client is disconnected. 0
+disables, in which case clients are queued indefinitely. This is
+separate from `query_wait_timeout`, which covers waiting for a server
+connection.
+
+Default: 0.0 (disabled)
+
+
 ## Dangerous timeouts
 
 Setting the following timeouts can cause unexpected errors.
@@ -1613,6 +1707,34 @@ when the backing Postgres server slow or down.  So it's important for
 `pool_size` to not be so low that it cannot handle these bursts.
 
 If not set, the `default_pool_size` is used.
+
+
+## Section [tag_budgets]
+
+This section configures per-tenant query tag budgets. Each entry is a
+tenant name followed by a space separated list of `key=value` budget
+parameters:
+
+```
+[tag_budgets]
+payments = share=25 burst=10 mode=enforce
+web = share=50 burst=20 mode=warn per_query_ms=100
+sidekiq = concurrency=4 mode=enforce
+```
+
+All parameters are optional; parameters that are not listed are
+inherited from the corresponding global `tag_budget_*` setting:
+
+- `share` - drain rate, see `tag_budget_share`
+- `burst` - bucket capacity in database-seconds, see `tag_budget_burst`
+- `per_query_ms` - per-query cost limit, see `tag_budget_per_query_ms`
+- `concurrency` - maximum in-flight queries, see `tag_budget_concurrency`
+- `mode` - `off`, `warn` or `enforce`, see `tag_budget_mode`
+
+Budgets from this section are the source of truth: a RELOAD reverts
+runtime changes made through the admin console (`TAG_BUDGET SET`) back
+to the configured values. Budgets created only through the admin
+console survive a RELOAD but not a restart.
 
 
 ## Include directive

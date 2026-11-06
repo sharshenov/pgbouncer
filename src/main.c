@@ -179,6 +179,18 @@ char *cf_stats_users;
 int cf_stats_period;
 int cf_log_stats;
 
+/* query tag monitoring and traffic control */
+char *cf_query_tag_tenant_key;
+char *cf_query_tag_keys;
+int cf_tag_stats_max;
+int cf_tag_budget_mode;
+int cf_tag_budget_share;
+int cf_tag_budget_burst;
+int cf_tag_budget_per_query_ms;
+int cf_tag_budget_concurrency;
+int cf_tag_budget_max_entries;
+usec_t cf_tag_budget_wait_timeout;
+
 int cf_log_connections;
 int cf_log_disconnections;
 int cf_log_pooler_errors;
@@ -311,6 +323,8 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("pkt_buf", CF_INT, cf_sbuf_len, CF_NO_RELOAD, "4096"),
 	CF_ABS("pool_idle_timeout", CF_TIME_USEC, cf_pool_idle_timeout, 0, "0"),
 	CF_ABS("pool_mode", CF_LOOKUP(pool_mode_map), cf_pool_mode, 0, "session"),
+	CF_ABS("query_tag_tenant_key", CF_STR, cf_query_tag_tenant_key, 0, ""),
+	CF_ABS("query_tag_keys", CF_STR, cf_query_tag_keys, 0, ""),
 	CF_ABS("query_timeout", CF_TIME_USEC, cf_query_timeout, 0, "0"),
 	CF_ABS("query_wait_notify", CF_INT, cf_query_wait_notify, 0, "5"),
 	CF_ABS("query_wait_timeout", CF_TIME_USEC, cf_query_wait_timeout, 0, "120"),
@@ -345,6 +359,14 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("syslog", CF_INT, cf_syslog, 0, "0"),
 	CF_ABS("syslog_facility", CF_STR, cf_syslog_facility, 0, "daemon"),
 	CF_ABS("syslog_ident", CF_STR, cf_syslog_ident, 0, "pgbouncer"),
+	CF_ABS("tag_budget_burst", CF_INT, cf_tag_budget_burst, 0, "0"),
+	CF_ABS("tag_budget_concurrency", CF_INT, cf_tag_budget_concurrency, 0, "0"),
+	CF_ABS("tag_budget_max_entries", CF_INT, cf_tag_budget_max_entries, 0, "1000"),
+	CF_ABS("tag_budget_mode", CF_LOOKUP(tag_budget_mode_map), cf_tag_budget_mode, 0, "off"),
+	CF_ABS("tag_budget_per_query_ms", CF_INT, cf_tag_budget_per_query_ms, 0, "0"),
+	CF_ABS("tag_budget_share", CF_INT, cf_tag_budget_share, 0, "100"),
+	CF_ABS("tag_budget_wait_timeout", CF_TIME_USEC, cf_tag_budget_wait_timeout, 0, "0"),
+	CF_ABS("tag_stats_max", CF_INT, cf_tag_stats_max, 0, "1000"),
 	CF_ABS("tcp_defer_accept", DEFER_OPS, cf_tcp_defer_accept, 0, DEFAULT_TCP_DEFER_ACCEPT),
 	CF_ABS("tcp_keepalive", CF_INT, cf_tcp_keepalive, 0, "1"),
 	CF_ABS("tcp_keepcnt", CF_INT, cf_tcp_keepcnt, 0, "0"),
@@ -367,6 +389,9 @@ static const struct CfKey bouncer_params [] = {
 	{NULL}
 };
 
+/* parse a [tag_budgets] section entry: tenant = share=25 burst=60 ... */
+static bool parse_tag_budget(void *base, const char *tenant, const char *params);
+
 static const struct CfSect config_sects [] = {
 	{
 		.sect_name = "pgbouncer",
@@ -380,6 +405,9 @@ static const struct CfSect config_sects [] = {
 	}, {
 		.sect_name = "peers",
 		.set_key = parse_peer,
+	}, {
+		.sect_name = "tag_budgets",
+		.set_key = parse_tag_budget,
 	}, {
 		.sect_name = NULL,
 	}
@@ -454,6 +482,12 @@ static bool requires_auth_file(int auth_type)
 	return auth_type >= AUTH_TYPE_TRUST;
 }
 
+/* parse a [tag_budgets] section entry: tenant = share=25 burst=60 ... */
+static bool parse_tag_budget(void *base, const char *tenant, const char *params)
+{
+	return qtags_budget_from_config(tenant, params);
+}
+
 /* config loading, tries to be tolerant to errors */
 bool load_config(void)
 {
@@ -469,6 +503,7 @@ bool load_config(void)
 
 	set_dbs_dead(true);
 	set_peers_dead(true);
+	qtags_config_dead(true);
 
 	/* actual loading */
 	load_file_ok = cf_load_file(&main_config, cf_config_file);
@@ -476,6 +511,8 @@ bool load_config(void)
 		/* load users if needed */
 		if (requires_auth_file(cf_auth_type))
 			loader_users_check();
+		qtags_config_sweep();
+		qtags_config_changed();
 		loaded = true;
 		ok = true;
 	} else if (!loaded) {
@@ -484,6 +521,7 @@ bool load_config(void)
 		log_warning("config file loading failed");
 		/* if ini file missing, don't kill anybody */
 		set_dbs_dead(false);
+		qtags_config_dead(false);
 		ok = false;
 	}
 
@@ -1062,6 +1100,7 @@ int main(int argc, char *argv[])
 		die("PgBouncer should not run as root");
 
 	admin_setup();
+	qtags_init();
 
 	if (check_old_process_unix())
 		die("unix socket is in use, cannot continue");

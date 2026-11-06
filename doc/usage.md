@@ -269,6 +269,45 @@ Subset of **SHOW STATS** showing the average values (**avg_**).
 
 Like **SHOW STATS** but aggregated across all databases.
 
+#### SHOW TAG_STATS
+
+Per-tenant query monitoring, populated from query tags (see
+`query_tag_tenant_key`). Each row covers one combination of database,
+tenant and secondary tag value:
+
+database
+:   Database name.
+
+tenant
+:   Value of the tenant tag.
+
+secondary_key, secondary_value
+:   First configured secondary key and its value (`-` when the query
+    had no secondary tag).
+
+query_count, query_time, wait_time, db_time
+:   Counters like the ones in **SHOW STATS**, scoped to this tenant
+    combination. `db_time` is `query_time - wait_time`, the time spent
+    inside PostgreSQL.
+
+budget_wait_time
+:   Time queries of this tenant spent queued for a tag budget.
+
+xact_count, xact_time
+:   Transaction counters like the ones in **SHOW STATS**.
+
+last_seen
+:   Unix time of the last tagged query.
+
+#### SHOW TAG_BUDGETS
+
+Query tag budgets, one row per tenant. `tenant`, `share`, `burst`,
+`per_query_ms`, `concurrency` and `mode` show the effective
+configuration (`-` inherits the global default). The remaining columns
+are runtime state: `debt` (owed database time in microseconds),
+`avg_cost` (estimated cost of the next query), `queries`, `active`
+(in-flight queries), `queued`, `rejected` and `warned` counters.
+
 #### SHOW SERVERS
 
 type
@@ -847,6 +886,22 @@ Changes a configuration setting (see also **SHOW CONFIG**).  For example:
 (Note that this command is run on the PgBouncer admin console and sets
 PgBouncer settings.  A **SET** command run on another database will be
 passed to the PostgreSQL backend like any other SQL command.)
+
+#### TAG_BUDGET SET/DEL/RESET
+
+Manage query tag budgets at runtime, for example:
+
+    TAG_BUDGET "SET payments share=25 burst=10 mode=enforce";
+    TAG_BUDGET "RESET payments";
+    TAG_BUDGET "DEL payments";
+
+**SET** merges the listed parameters into the tenant's budget, keeping
+the others. **RESET** zeroes the debt and counters of the budget.
+**DEL** removes it. All three wake queries that are queued for the
+budget. The whole command including the tenant name must be quoted as
+one argument, as shown above. See `tag_budget_mode` for the parameter
+meaning and the `[tag_budgets]` config section for the permanent way to
+configure budgets.
 
 ### Signals
 

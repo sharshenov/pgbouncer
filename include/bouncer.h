@@ -184,6 +184,7 @@ extern int cf_sbuf_len;
 #include "proto.h"
 #include "objects.h"
 #include "stats.h"
+#include "qtags.h"
 #include "janitor.h"
 #include "hba.h"
 #include "ldapauth.h"
@@ -788,6 +789,15 @@ struct PgSocket {
 
 	VarCache vars;		/* state of interesting server parameters */
 
+	/* client: query tags parsed from the query currently in flight */
+	struct QTagSet qtags;
+	/* client: parked by the query tag budget, packet pending in the sbuf */
+	struct List qtag_wait;
+	usec_t qtag_wait_deadline;	/* 0 when not queued */
+	usec_t qtag_wait_since;		/* start of the current budget wait */
+	bool qtag_wait_buffered;	/* packet lives in packet_cb_state */
+
+
 	/* client: prepared statements prepared by this client */
 	PgClientPreparedStatement *client_prepared_statements;
 	/* server: prepared statements prepared on this server */
@@ -931,6 +941,18 @@ extern char *cf_server_tls_ciphers;
 extern char *cf_server_tls13_ciphers;
 
 extern int cf_max_prepared_statements;
+
+/* query tag monitoring and traffic control */
+extern char *cf_query_tag_tenant_key;
+extern char *cf_query_tag_keys;
+extern int cf_tag_stats_max;
+extern int cf_tag_budget_mode;
+extern int cf_tag_budget_share;
+extern int cf_tag_budget_burst;
+extern int cf_tag_budget_per_query_ms;
+extern int cf_tag_budget_concurrency;
+extern int cf_tag_budget_max_entries;
+extern usec_t cf_tag_budget_wait_timeout;
 
 extern const struct CfLookup pool_mode_map[];
 extern const struct CfLookup load_balance_hosts_map[];

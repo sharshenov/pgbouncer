@@ -23,3 +23,6 @@ bool check_db_connection_count(PgSocket *client);
 bool check_user_connection_count(PgSocket *client);
 bool sending_auth_query(PgSocket *client);
 PgDatabase *prepare_auth_database(PgSocket *client) _MUSTCHECK;
+
+/* dispatch a fully buffered packet (see packet_cb_state), used by qtags.c */
+bool client_handle_complete_packet(PgSocket *client, PktHdr *pkt);

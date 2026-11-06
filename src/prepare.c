@@ -157,7 +157,7 @@ static PgPreparedStatement *get_prepared_statement(PgParsePacket *pkt, bool *fou
  * This is equivalent of sbuf_prepare_skip() but it also handles the case where
  * we used our special callbacke packet buffering logic.
  */
-static void skip_possibly_completely_buffered_packet(PgSocket *client, PktHdr *pkt)
+void skip_possibly_completely_buffered_packet(PgSocket *client, PktHdr *pkt)
 {
 	/*
 	 * Now we need to make sure the original packet is not sent to the server.
@@ -431,6 +431,22 @@ static PgClientPreparedStatement *get_client_prepared_statement(PgSocket *client
 		disconnect_client(client, true, "prepared statement did not exist");
 	}
 	return client_ps;
+}
+
+/*
+ * Return the query text of a prepared statement, or NULL when the client
+ * does not have this statement. Unlike get_client_prepared_statement this
+ * does not disconnect the client on a miss. Used by the query tag parser
+ * to attach tags to Bind packets of named prepared statements.
+ */
+const char *get_prepared_statement_query(PgSocket *client, const char *stmt_name)
+{
+	PgClientPreparedStatement *client_ps;
+
+	HASH_FIND_STR(client->client_prepared_statements, stmt_name, client_ps);
+	if (!client_ps || !client_ps->ps)
+		return NULL;
+	return (const char *)client_ps->ps->query_and_parameters;
 }
 
 /*
