@@ -38,6 +38,9 @@ python3 dev/stand/stand.py down    # retains only this project's data
 ```
 
 The initial checkout is upstream `ac3bb6d748cefc9470c2c66e061549a59a072ce3`.
+Once feature sources change, supply a separate clean checkout with `--source`
+when building the upstream comparison; the source guard rejects modified
+baselines even if they still have the upstream commit as an ancestor.
 Dependency images are pinned in `images.lock.json`. To refresh deliberately,
 remove that lock and run `python3 dev/stand/stand.py lock`, then review the diff.
 Build that exact source separately with `--source` once candidate changes exist.

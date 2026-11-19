@@ -186,10 +186,19 @@ def prepare(variant, observe=False):
     if not manifest_path.exists():
         raise SystemExit(f"Build '{variant}' first")
     manifest = json.loads(manifest_path.read_text())
-    if (STATE / "compose.json").exists():
-        running = capture(compose("ps", "--status", "running", "--quiet"))
-        if running:
-            raise SystemExit("Stand is running; use down before changing its variant")
+    running = capture(
+        [
+            "docker",
+            "ps",
+            "--quiet",
+            "--filter",
+            f"label=com.docker.compose.project={PROJECT}",
+        ]
+    )
+    if running:
+        raise SystemExit(
+            "Stand is running; use its owning checkout to stop it before changing variants"
+        )
     STATE.mkdir(exist_ok=True)
     STATE.chmod(0o700)
     RESULTS.mkdir(exist_ok=True)

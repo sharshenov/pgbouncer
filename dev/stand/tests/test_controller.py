@@ -27,6 +27,9 @@ class ControllerTest(unittest.TestCase):
         self.patches = patch.multiple(stand, STATE=self.state, RESULTS=self.results)
         self.patches.start()
         self.addCleanup(self.patches.stop)
+        self.capture = patch.object(stand, "capture", return_value="")
+        self.capture.start()
+        self.addCleanup(self.capture.stop)
         self.addCleanup(self.tmp.cleanup)
         self.manifest = {
             "variant": "upstream",
@@ -89,6 +92,15 @@ class ControllerTest(unittest.TestCase):
             self.assertRaisesRegex(SystemExit, "running"),
         ):
             stand.prepare("upstream")
+
+    def test_cannot_take_over_running_project_without_local_state(self):
+        with (
+            patch.object(stand, "images", return_value=self.dependencies),
+            patch.object(stand, "capture", return_value="another-checkouts-container"),
+            self.assertRaisesRegex(SystemExit, "owning checkout"),
+        ):
+            stand.prepare("upstream")
+        self.assertFalse((self.state / "compose.json").exists())
 
     def test_proxy_uses_recorded_immutable_image(self):
         config = self.prepare()
