@@ -1,0 +1,66 @@
+name: Synthetic stand
+
+on:
+  push:
+    paths:
+      - "dev/stand/**"
+      - ".dockerignore"
+      - ".github/workflows/synthetic-stand.yml"
+      - "src/**"
+      - "include/**"
+      - "Makefile"
+      - "meson.build"
+      - "configure.ac"
+  pull_request:
+    paths:
+      - "dev/stand/**"
+      - ".dockerignore"
+      - ".github/workflows/synthetic-stand.yml"
+      - "src/**"
+      - "include/**"
+      - "Makefile"
+      - "meson.build"
+      - "configure.ac"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install ".[dev]" "psycopg[binary]"
+      - run: python3 -m unittest discover -s dev/stand/tests -v
+      - run: ruff check dev/stand && ruff format --check dev/stand
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require pinned dependencies
+        run: test -f dev/stand/images.lock.json
+      - name: Build and run baseline smoke
+        run: |
+          python3 dev/stand/stand.py build --variant candidate
+          python3 dev/stand/stand.py up --variant candidate
+          python3 dev/stand/stand.py run --profile smoke --duration 10 --clients 8
+          python3 dev/stand/stand.py verify
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stand-smoke
+          path: dev/stand/results/
+          if-no-files-found: ignore
+      - name: Clean up this stand
+        if: always()
+        run: |
+          if test -f dev/stand/.state/compose.json; then
+            python3 dev/stand/stand.py down --destroy-data
+          fi

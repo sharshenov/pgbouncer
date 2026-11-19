@@ -1,0 +1,9 @@
+.git
+.venv
+venv
+env
+build
+.objs
+dev/stand/.state
+dev/stand/results
+**/__pycache__
