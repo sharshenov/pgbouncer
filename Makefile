@@ -26,6 +26,7 @@ pgbouncer_SOURCES = \
 	src/system.c \
 	src/util.c \
 	src/varcache.c \
+	src/workload_tags.c \
 	src/common/sha2.c \
 	src/common/base64.c \
 	src/common/bool.c \
@@ -60,6 +61,7 @@ pgbouncer_SOURCES = \
 	include/system.h \
 	include/util.h \
 	include/varcache.h \
+	include/workload_tags.h \
 	include/common/ascii.h \
 	include/common/base64.h \
 	include/common/builtins.h \

@@ -26,3 +26,13 @@ test('hba_test',
      hba_test,
      workdir: meson.project_source_root() / 'test',
     )
+
+workload_tags_test = executable('workload_tags_test',
+  'workload_tags_test.c',
+  '../src/workload_tags.c',
+  libusual_sources,
+  config_h,
+  include_directories: test_incdirs,
+  dependencies: [libevent, openssl, systemd, threads] + net_deps,
+)
+test('workload_tags_test', workload_tags_test)

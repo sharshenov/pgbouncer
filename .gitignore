@@ -15,6 +15,7 @@
 /tags
 /test/.objs
 /test/hba_test
+/test/workload_tags_test
 /test/log
 /test/pgdata/
 /test/test.log
