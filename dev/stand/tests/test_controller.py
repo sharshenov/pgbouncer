@@ -127,6 +127,18 @@ class ControllerTest(unittest.TestCase):
             stand.build(SimpleNamespace(source=self.root, variant="upstream"))
         command.assert_not_called()
 
+    def test_observation_cannot_be_enabled_on_upstream(self):
+        with (
+            patch.object(stand, "images", return_value=self.dependencies),
+            self.assertRaisesRegex(SystemExit, "candidate"),
+        ):
+            stand.prepare("upstream", observe=True)
+
+    def test_workload_stats_cannot_be_requested_from_a_baseline(self):
+        self.prepare()
+        with self.assertRaisesRegex(SystemExit, "--observe"):
+            stand.stats()
+
     def test_verify_rejects_published_sql_ports(self):
         self.prepare()
         samples = [

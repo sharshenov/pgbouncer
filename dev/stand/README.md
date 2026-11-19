@@ -45,6 +45,12 @@ Use `--variant candidate` for feature source; `--variant legacy` builds release
 1.22.1 at its pinned commit. Switch only after `down`. Each result records the
 source digest, build system, immutable local image ID, and dependency digests.
 
+For a candidate implementing observation, explicitly enable it with
+`up --variant candidate --observe`. Run `stand.py stats` to collect both proxies'
+workload SQL snapshots and status into an artifact-linked JSON report. Baseline
+images never receive candidate-only configuration. This is a stand collector,
+not the production exporter extension.
+
 Build and execute upstream tests in isolated containers:
 
 ```sh
