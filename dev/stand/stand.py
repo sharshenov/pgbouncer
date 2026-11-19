@@ -378,6 +378,8 @@ def workload(args):
                 f"/results/{output}",
                 "--processes",
                 args.processes,
+                "--prepared-mode",
+                args.prepared_mode,
             )
         ],
         check=False,
@@ -484,6 +486,7 @@ def main():
         help="Total scheduled operations/s; 0 is closed-loop",
     )
     p.add_argument("--processes", type=int, default=1, choices=range(1, 5))
+    p.add_argument("--prepared-mode", choices=("unnamed", "named"), default="unnamed")
     p = sub.add_parser("test")
     p.add_argument("--build-system", choices=("autoconf", "meson"), default="autoconf")
     args = parser.parse_args()

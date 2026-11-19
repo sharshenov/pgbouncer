@@ -4,7 +4,7 @@ import importlib.util
 import random
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 STAND = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("stand_workload", STAND / "workload.py")
@@ -31,9 +31,9 @@ class HistogramTest(unittest.TestCase):
             histogram.observe(0.001)
         self.assertEqual(len(histogram.bins), workload.HISTOGRAM_BINS)
 
-    def test_comment_is_production_shaped_but_stable_for_preparation(self):
+    def test_comment_is_production_shaped_and_varies_only_unrelated_trace(self):
         first = workload.comment(1, 1)
-        self.assertEqual(first, workload.comment(1, 200))
+        self.assertNotEqual(first, workload.comment(1, 200))
         self.assertIn("%3A%3A", first)
         self.assertIn("team='synthetic-team-1'", first)
 
@@ -46,6 +46,7 @@ class HistogramTest(unittest.TestCase):
             reports.append(
                 {
                     "profile": "smoke",
+                    "prepared_mode": "unnamed",
                     "duration_seconds": 1,
                     "clients": 1,
                     "requested_operations_per_second": count,
@@ -69,6 +70,20 @@ class HistogramTest(unittest.TestCase):
 
 
 class OperationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_connection_uses_the_requested_prepared_mode(self):
+        for mode, threshold in (("unnamed", None), ("named", 5)):
+            with (
+                self.subTest(mode=mode),
+                patch.dict(workload.os.environ, {"STAND_PASSWORD": "synthetic"}),
+                patch.object(
+                    workload.psycopg.AsyncConnection, "connect", new_callable=AsyncMock
+                ) as connect,
+            ):
+                await workload.connect("proxy-a", "primary", mode)
+                self.assertEqual(
+                    connect.call_args.kwargs["prepare_threshold"], threshold
+                )
+
     async def test_parameterized_tag_escapes_driver_percent_markers(self):
         cursor = Mock()
         cursor.fetchone = AsyncMock(return_value=(1,))

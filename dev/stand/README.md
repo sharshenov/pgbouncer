@@ -62,7 +62,13 @@ Never use it until results needed for comparison have been retained.
 
 `throughput` measures indexed point reads, `mixed` adds updates, short explicit
 transactions and slow work, and `occupancy` creates controlled active backend
-occupancy. Names and tags are fabricated. Prepared statement reuse is exercised.
+occupancy. Names and tags are fabricated.
+
+The default `--prepared-mode unnamed` disables named prepared-statement caching
+and varies unrelated trace tags, matching the application's configuration shape.
+Use `--prepared-mode named` to exercise prepared-statement reuse with stable
+comments. Reports identify the mode; the initial stand capacity measurements
+used named reuse and are not an unnamed-protocol qualification.
 
 `--rate` is **operations/s**, not SQL messages/s. A mixed transaction uses four
 SQL messages. Results report both counts. Rate zero is closed-loop saturation;
