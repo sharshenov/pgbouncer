@@ -673,7 +673,7 @@ bool workload_show_status(PgSocket *admin, const char *arg)
 		return admin_error(admin, "no mem");
 	pktbuf_write_RowDescription(buf, "NNNN", "enabled", "detail_limit_per_database", "allocation_failures", "database_resets");
 	pktbuf_write_DataRow(buf, "NNNN", (uint64_t)(cf_workload_observation != 0),
-			     (uint64_t)MAX(0, cf_workload_stats_max), allocation_failures, database_resets);
+			     (uint64_t)(cf_workload_stats_max > 0 ? cf_workload_stats_max : 0), allocation_failures, database_resets);
 	admin_flush(admin, buf, "SHOW");
 	return true;
 }

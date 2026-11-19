@@ -140,6 +140,19 @@ def test_workload_cardinality_preserves_overflow(observed):
     assert sum(r["completed"] for r in snapshot.values()) == 4
 
 
+@pytest.mark.parametrize("limit", [-1, 0, 2])
+def test_workload_status_reports_effective_detail_limit(observed, limit):
+    observed.admin(f"SET workload_stats_max = '{limit}'")
+    status = observed.admin("SHOW WORKLOAD_STATUS", row_factory=dict_row)[0]
+    assert status["detail_limit_per_database"] == max(0, limit)
+    observed.sql("/*team=one,caller=limit*/SELECT 1")
+    snapshot = rows(observed)
+    if limit <= 0:
+        assert snapshot[("p0", "overflow", "", "")]["completed"] == 1
+    else:
+        assert tagged(observed, caller="limit")["completed"] == 1
+
+
 def test_workload_unknown_malformed_and_long_identities(observed):
     with observed.conn() as conn:
         conn.execute("SELECT 1")
