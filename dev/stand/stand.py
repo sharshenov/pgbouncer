@@ -8,6 +8,8 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import ProxyHandler, build_opener
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -251,7 +253,6 @@ def prepare(variant):
             "depends_on": {
                 f"db-{x}": {"condition": "service_healthy"} for x in ("a", "b")
             },
-            "ports": [f"127.0.0.1:{26432 if name == 'a' else 26433}:6432"],
             "cpus": 1,
             "mem_limit": "512m",
             "stop_signal": "SIGINT",
@@ -320,6 +321,7 @@ def prepare(variant):
             "metrics:/prometheus",
         ],
         "ports": ["127.0.0.1:26909:9090"],
+        "networks": ["stand", "management"],
         "cpus": 0.5,
         "mem_limit": "512m",
     }
@@ -344,7 +346,7 @@ def prepare(variant):
         STATE / "compose.json",
         {
             "services": services,
-            "networks": {"stand": {"internal": True}},
+            "networks": {"stand": {"internal": True}, "management": {}},
             "volumes": {name: {} for name in ("db-a", "db-b", "metrics")},
         },
     )
@@ -396,6 +398,62 @@ def workload(args):
     completed.check_returncode()
 
 
+def verify():
+    active = json.loads((STATE / "active.json").read_text())
+    opener = build_opener(ProxyHandler({}))
+    observations = {}
+    selector = f'{{job="stand",stand_variant="{active["variant"]}"}}'
+    expressions = {
+        "up": "up" + selector,
+        "pgbouncer_up": "pgbouncer_up" + selector,
+        "scrape_age_seconds": "time() - timestamp(pgbouncer_up" + selector + ")",
+    }
+    for metric, expression in expressions.items():
+        url = "http://127.0.0.1:26909/api/v1/query?" + urlencode({"query": expression})
+        with opener.open(url, timeout=10) as response:
+            samples = json.load(response)["data"]["result"]
+        if {s["metric"]["process"] for s in samples} != {"proxy-a", "proxy-b"}:
+            raise SystemExit(f"Missing collector targets for {metric}")
+        healthy = (
+            all(0 <= float(s["value"][1]) <= 15 for s in samples)
+            if metric == "scrape_age_seconds"
+            else all(s["value"][1] == "1" for s in samples)
+        )
+        if not healthy:
+            raise SystemExit(f"Unhealthy collector targets for {metric}")
+        observations[metric] = samples
+    names = [
+        f"pgobs-{role}-{n}-1"
+        for role in ("db", "proxy", "exporter")
+        for n in ("a", "b")
+    ]
+    containers = json.loads(capture(["docker", "inspect", *names]))
+    limits = {}
+    for container in containers:
+        config = container["HostConfig"]
+        networks = container["NetworkSettings"]["Networks"]
+        if config["Memory"] <= 0 or config["NanoCpus"] <= 0:
+            raise SystemExit("Stand service has no resource limit")
+        if set(networks) != {"pgobs_stand"} or config["PortBindings"]:
+            raise SystemExit("SQL/traffic services are not exclusively isolated")
+        if (
+            container["Name"].startswith("/pgobs-proxy-")
+            and container["Image"] != active["image_id"]
+        ):
+            raise SystemExit("Running proxy image does not match the active manifest")
+        limits[container["Name"]] = {
+            "memory_bytes": config["Memory"],
+            "cpu_quota": config["NanoCpus"] / 1e9,
+        }
+    report = {
+        "variant": active["variant"],
+        "collectors": observations,
+        "limits": limits,
+    }
+    write_json(RESULTS / "verification.json", report)
+    print(json.dumps(report, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -410,6 +468,7 @@ def main():
     p = sub.add_parser("down")
     p.add_argument("--destroy-data", action="store_true")
     sub.add_parser("status")
+    sub.add_parser("verify")
     p = sub.add_parser("run")
     p.add_argument(
         "--profile",
@@ -445,6 +504,8 @@ def main():
         )
     elif args.action == "status":
         run(compose("ps"))
+    elif args.action == "verify":
+        verify()
     elif args.action == "run":
         workload(args)
     elif args.action == "test":

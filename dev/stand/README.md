@@ -9,14 +9,17 @@ not a production deployment and does not copy production schemas or rows.
   external networks, mount application secrets, or pass production DSNs.
 - Two disposable PostgreSQL servers, two transaction-pooling proxies, two exporter
   instances, Prometheus, and an ephemeral load-generator container.
-- Only proxy ports `26432` / `26433` and Prometheus `26909` are published, on
-  **127.0.0.1**. PostgreSQL has no published port.
+- Only Prometheus `26909` is published, on **127.0.0.1**, through a separate
+  management network. Databases, proxies, exporters, and load generators stay
+  entirely on the internal network, without externally published SQL ports.
+  Administrative/test SQL clients must run inside that network. Internal-only
+  Docker networks do not reliably support host port publication.
 - Explicit per-service CPU/memory limits. Databases use named volumes; state and
   generated stand-only credentials live in ignored `.state/`. Do not publish it.
 - The load driver accepts no database destination. Its only targets are the
   stand's service names, on the isolated network. No remote execution identity
   belongs in this repository or tickets.
-- One stand per Docker daemon for now. Check port availability before starting.
+- One stand per Docker daemon for now. Check UI port availability before starting.
   Never use global Docker prune or modify unrelated containers.
 
 ## Run
@@ -27,6 +30,7 @@ Docker with Compose v2 and Python 3 are required. Run commands from a checkout:
 python3 dev/stand/stand.py build --variant upstream --revision UPSTREAM_COMMIT
 python3 dev/stand/stand.py up --variant upstream
 python3 dev/stand/stand.py run --profile smoke --duration 30 --clients 16
+python3 dev/stand/stand.py verify
 python3 dev/stand/stand.py run --profile mixed --duration 300 --clients 256 --rate 10000
 python3 dev/stand/stand.py run --profile throughput --duration 300 --clients 256 --rate 40000 --processes 4
 python3 dev/stand/stand.py status

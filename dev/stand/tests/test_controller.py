@@ -1,13 +1,14 @@
 """Fast stand safety tests: no Docker, SSH, or database access."""
 
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 STAND = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("stand_controller", STAND / "stand.py")
@@ -28,6 +29,7 @@ class ControllerTest(unittest.TestCase):
         self.addCleanup(self.patches.stop)
         self.addCleanup(self.tmp.cleanup)
         self.manifest = {
+            "variant": "upstream",
             "image": "pgobs-test:local",
             "image_id": "sha256:" + "a" * 64,
             "workload_image_id": "sha256:" + "c" * 64,
@@ -44,10 +46,13 @@ class ControllerTest(unittest.TestCase):
 
     def test_stand_is_isolated_and_resource_bounded(self):
         config = self.prepare()
-        self.assertEqual(config["networks"], {"stand": {"internal": True}})
+        self.assertEqual(config["networks"]["stand"], {"internal": True})
         for name, service in config["services"].items():
             with self.subTest(service=name):
-                self.assertEqual(service["networks"], ["stand"])
+                self.assertEqual(
+                    service["networks"],
+                    ["stand", "management"] if name == "prometheus" else ["stand"],
+                )
                 self.assertGreater(service["cpus"], 0)
                 self.assertIn("mem_limit", service)
                 self.assertNotIn("network_mode", service)
@@ -55,6 +60,8 @@ class ControllerTest(unittest.TestCase):
                 for port in service.get("ports", []):
                     self.assertTrue(port.startswith("127.0.0.1:"))
                 if name.startswith("db-"):
+                    self.assertNotIn("ports", service)
+                if name.startswith("proxy-"):
                     self.assertNotIn("ports", service)
 
     def test_configuration_has_only_synthetic_destinations(self):
@@ -119,6 +126,32 @@ class ControllerTest(unittest.TestCase):
         ):
             stand.build(SimpleNamespace(source=self.root, variant="upstream"))
         command.assert_not_called()
+
+    def test_verify_rejects_published_sql_ports(self):
+        self.prepare()
+        samples = [
+            {"metric": {"process": f"proxy-{n}"}, "value": [0, "1"]} for n in ("a", "b")
+        ]
+        opener = Mock()
+        opener.open.side_effect = [
+            io.StringIO(json.dumps({"data": {"result": samples}})) for _ in range(3)
+        ]
+        container = {
+            "Name": "/pgobs-proxy-a-1",
+            "Image": self.manifest["image_id"],
+            "HostConfig": {
+                "Memory": 1024,
+                "NanoCpus": 1_000_000_000,
+                "PortBindings": {"6432/tcp": [{"HostIp": "0.0.0.0"}]},
+            },
+            "NetworkSettings": {"Networks": {"pgobs_stand": {}}},
+        }
+        with (
+            patch.object(stand, "build_opener", return_value=opener),
+            patch.object(stand, "capture", return_value=json.dumps([container])),
+            self.assertRaisesRegex(SystemExit, "exclusively isolated"),
+        ):
+            stand.verify()
 
 
 if __name__ == "__main__":
