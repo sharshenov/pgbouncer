@@ -438,7 +438,25 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install pandoc
         shell: pwsh
-        run: choco install -y --no-progress pandoc
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "3.8.3"
+          $sha256 = "a77c14078a5c4c6e396d5f5c03f4849eff4a858414bb9e69560bb35528cbf57a"
+          $archive = Join-Path $env:RUNNER_TEMP "pandoc.zip"
+          $install = Join-Path $env:RUNNER_TEMP "pandoc"
+          Invoke-WebRequest `
+            -Uri "https://github.com/jgm/pandoc/releases/download/$version/pandoc-$version-windows-x86_64.zip" `
+            -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $sha256) {
+            throw "Pandoc archive checksum mismatch"
+          }
+          Expand-Archive -Path $archive -DestinationPath $install
+          $bin = Join-Path $install "pandoc-$version"
+          if (-not (Test-Path (Join-Path $bin "pandoc.exe"))) {
+            throw "Pandoc executable missing from verified archive"
+          }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "PANDOC_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Configure hosts file
         shell: pwsh
         run: Add-Content c:\Windows\System32\Drivers\etc\hosts "127.0.0.1 localhost"
@@ -454,7 +472,7 @@ jobs:
           pip install .
       - name: Build
         run: |
-          export PATH="/c/programdata/chocolatey/bin:$PATH"
+          export PATH="$(cygpath -u "$PANDOC_BIN"):$PATH"
           # Link statically so the resulting pgbouncer.exe does not depend on
           # the MSYS2 runtime DLLs. These are passed as environment variables
           # rather than through CONFIGURE_ARGS because LIBS contains spaces,
