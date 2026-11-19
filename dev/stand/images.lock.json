@@ -1,0 +1,5 @@
+{
+  "postgres": "postgres@sha256:1757c628698dd1ca67ff7a5fc386bfd91040afc62a45484c346c788b0cbe5402",
+  "exporter": "prometheuscommunity/pgbouncer-exporter@sha256:34955682d282f816cfa48d0fc42a471fa65533aebb1b755b80a0983fa08ea33f",
+  "prometheus": "prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996"
+}
