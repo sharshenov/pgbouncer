@@ -61,18 +61,39 @@ async def test_query_wait_timeout(
     bouncer.default_db = "postgres"
     bouncer.default_user = "puser1"
 
+    async def start_blocker(duration):
+        task = bouncer.asleep(duration)
+
+        async def wait_running():
+            while True:
+                active = await bouncer.pg.asql(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    "WHERE usename = %s AND state = 'active' AND query = %s)",
+                    params=(bouncer.default_user, f"select pg_sleep({duration})"),
+                )
+                if active[0][0]:
+                    return
+                if task.done():
+                    await task
+                    raise AssertionError("Blocker finished before it became observable")
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_running(), timeout=5)
+        return task
+
     with bouncer.run_with_config(pgbouncer_ini):
-        conn_1_fut = bouncer.asleep(3)
-        await asyncio.sleep(0.1)
+        conn_1_fut = await start_blocker(4)
+        try:
+            with pytest.raises(psycopg.OperationalError, match=r"query_wait_timeout"):
+                await bouncer.atest()
+        finally:
+            await conn_1_fut
 
-        with pytest.raises(psycopg.OperationalError, match=r"query_wait_timeout"):
-            bouncer.test()
-        await conn_1_fut
-
-        conn_1_fut = bouncer.asleep(1)
-        await asyncio.sleep(0.1)
-        bouncer.test()
-        await conn_1_fut
+        conn_1_fut = await start_blocker(1)
+        try:
+            await bouncer.atest()
+        finally:
+            await conn_1_fut
 
 
 def test_server_lifetime(pg, bouncer):
