@@ -52,7 +52,11 @@ ensure_uncrustify() {
 		"https://github.com/uncrustify/uncrustify/archive/refs/tags/$tarball" \
 		--output "$tmp/$tarball"
 	tar xzf "$tmp/$tarball" -C "$tmp"
-	cmake -S "$tmp/uncrustify-uncrustify-$UNCRUSTIFY_VERSION" -B "$tmp/build"
+	# CMake 4 removed compatibility with the older minimum declared by this
+	# pinned release. Keep the formatter version stable while opting into
+	# policies that its build supports.
+	cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+		-S "$tmp/uncrustify-uncrustify-$UNCRUSTIFY_VERSION" -B "$tmp/build"
 	cmake --build "$tmp/build"
 	cp "$tmp/build/uncrustify" "$root/uncrustify"
 }
