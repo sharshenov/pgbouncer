@@ -269,6 +269,47 @@ Subset of **SHOW STATS** showing the average values (**avg_**).
 
 Like **SHOW STATS** but aggregated across all databases.
 
+#### SHOW WORKLOAD_STATS
+
+Passive observation rows keyed by database, attribution status, team, and caller.
+`tagged` rows retain recognized identities. Fixed `missing`, `malformed`,
+`unsupported`, and `overflow` rows retain aggregate traffic without claiming a
+known identity. Sum **all** rows for the database total; there is no duplicate
+total row to sum again.
+
+An operation is a simple Query exchange, an extended Execute exchange, or an
+unattributed fast-path FunctionCall, not
+each SQL statement inside a multi-statement message. `forwarded`, `completed`,
+`failed`, `skipped`, and `aborted` describe their lifecycle; `failed` is a subset
+of `completed` and can include a matching logical operation failing during
+preparation rather than executor work. `inflight` includes pipeline-queued operations; `running` uses
+the proxy's serial response-order estimate of active execution.
+
+`execution_us` is cumulative proxy-observed active operation wall time.
+`pipeline_wait_us` is waiting behind earlier operations already forwarded on
+the same connection. `pool_wait_us` separately records completed backend
+acquisition waits. These are not CPU or IO measurements; execution includes
+response-transfer/proxy effects and cannot identify lock blockers.
+
+`transactions`, `aborted_transactions`, `transactions_inflight`, and
+`transaction_us` track backend occupancy pinned to the first observed operation
+until idle ReadyForQuery or disconnect. `oldest_running_us` and
+`live_execution_us` expose live work before completion. The latter is a gauge,
+not a cumulative counter; it must not be passed to counter-rate functions.
+
+The initial implementation supports simple and unnamed extended operations,
+and named prepared statements with an unnamed portal when PgBouncer's canonical
+prepared tracking is enabled. Named portals and unavailable/overlong comment
+prefixes and Execute-only portal continuations are explicitly unsupported
+attribution, not grounds for blocking SQL.
+
+#### SHOW WORKLOAD_STATUS
+
+Reports whether new observation is enabled, the configured detailed identity
+limit per database, cumulative observation allocation failures, and database
+observation resets on removal. Allocation
+failure is a collection-coverage fault, never a reason to reject application SQL.
+
 #### SHOW SERVERS
 
 type

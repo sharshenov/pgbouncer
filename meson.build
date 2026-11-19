@@ -576,6 +576,7 @@ pgbouncer_sources = files(
   'src/util.c',
   'src/varcache.c',
   'src/workload_tags.c',
+  'src/workload.c',
   'src/common/base64.c',
   'src/common/bool.c',
   'src/common/cryptohash.c',

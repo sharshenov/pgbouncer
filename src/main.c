@@ -178,6 +178,8 @@ char *cf_admin_users;
 char *cf_stats_users;
 int cf_stats_period;
 int cf_log_stats;
+int cf_workload_observation;
+int cf_workload_stats_max;
 
 int cf_log_connections;
 int cf_log_disconnections;
@@ -363,6 +365,8 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("user", CF_STR, global_username, CF_NO_RELOAD, NULL),
 #endif
 	CF_ABS("verbose", CF_INT, cf_verbose, 0, NULL),
+	CF_ABS("workload_observation", CF_INT, cf_workload_observation, 0, "0"),
+	CF_ABS("workload_stats_max", CF_INT, cf_workload_stats_max, 0, "1000"),
 
 	{NULL}
 };

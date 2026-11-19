@@ -1072,6 +1072,31 @@ and lower see `client_tls_ciphers`.
 Default: `<empty>`
 
 
+## Workload observation
+
+### workload_observation
+
+Enable passive workload observation from leading SQL comments containing
+`team` and `caller`. This never performs admission control, rewrites SQL, or
+sends client notices. Observation state attached to outstanding operations
+continues to be reconciled after disabling collection.
+
+Default: 0 (disabled)
+
+### workload_stats_max
+
+Maximum number of detailed workload identities retained **per database**.
+Rows are not evicted or reset on RELOAD. At the limit, new identities use
+an explicit overflow aggregate, preserving observed totals without dropping
+live accounting. Existing rows remain usable if the limit is reduced.
+0 (or a negative value) records only fallback aggregates for new identities.
+Database removal resets that database's observation state.
+
+Default: 1000
+
+See `SHOW WORKLOAD_STATS`, `SHOW WORKLOAD_STATUS`, and
+`dev/workload-observation.md` for the accounting units and coverage limitations.
+
 ## Dangerous timeouts
 
 Setting the following timeouts can cause unexpected errors.

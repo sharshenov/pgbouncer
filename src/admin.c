@@ -1396,6 +1396,8 @@ static bool admin_show_totals(PgSocket *admin, const char *arg)
 
 
 static struct cmd_lookup show_map [] = {
+	{"workload_stats", workload_show_stats},
+	{"workload_status", workload_show_status},
 	{"clients", admin_show_clients},
 	{"config", admin_show_config},
 	{"databases", admin_show_databases},

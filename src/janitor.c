@@ -887,6 +887,7 @@ void kill_database(PgDatabase *db)
 	/* Cleanup cached scram keys stored with PgCredentials */
 	clear_user_tree_cached_scram_keys(&db->user_tree);
 	aatree_destroy(&db->user_tree);
+	workload_database_free(db);
 	slab_free(db_cache, db);
 }
 

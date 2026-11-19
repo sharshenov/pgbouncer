@@ -190,6 +190,7 @@ void init_caches(void)
 /* free all memory related to the given client */
 static void client_free(PgSocket *client)
 {
+	workload_client_free(client);
 	free_client_prepared_statements(client);
 	varcache_clean(&client->vars);
 	slab_free(var_list_cache, client->vars.var_list);
@@ -204,6 +205,7 @@ static void server_free(PgSocket *server)
 
 	statlist_for_each_safe(el, &server->outstanding_requests, tmp_l) {
 		request = container_of(el, OutstandingRequest, node);
+		workload_request_finish(server, request, WORKLOAD_ABORTED);
 		statlist_remove(&server->canceling_clients, el);
 		if (request->server_ps)
 			free_server_prepared_statement(request->server_ps);
@@ -843,6 +845,7 @@ void activate_client(PgSocket *client)
 
 	/* account for time client spent waiting for server */
 	client->pool->stats.wait_time += (get_cached_time() - client->wait_start);
+	workload_pool_wait(client, get_cached_time() - client->wait_start);
 
 	slog_debug(client, "activate_client");
 	change_client_state(client, CL_ACTIVE);
@@ -1087,6 +1090,7 @@ bool add_outstanding_request(PgSocket *client, char type, ResponseAction action)
 	request->type = type;
 	request->action = action;
 	statlist_append(&server->outstanding_requests, &request->node);
+	workload_request_add(client, request);
 	slog_noise(client, "add_outstanding_request: added %c, still outstanding %d",
 		   type, statlist_count(&client->link->outstanding_requests));
 	return true;
@@ -1119,6 +1123,8 @@ bool pop_outstanding_request(PgSocket *server, const char types[], bool *skip)
 		return false;
 
 	statlist_pop(&server->outstanding_requests);
+	workload_request_finish(server, request, WORKLOAD_COMPLETED);
+	workload_advance(server);
 	if (skip)
 		*skip = request->action == RA_SKIP;
 	slog_noise(server, "pop_outstanding_request: popped %c, still outstanding %d, skip %d",
@@ -1160,12 +1166,14 @@ bool clear_outstanding_requests_until(PgSocket *server, const char types[])
 				   HASH_COUNT(server->server_prepared_statements));
 		}
 		statlist_remove(&server->outstanding_requests, item);
+		workload_request_finish(server, request, WORKLOAD_SKIPPED);
 		slab_free(outstanding_request_cache, request);
 
 		if (strchr(types, type))
 			break;
 	}
 	slog_noise(server, "clear_outstanding_requests_until_sync: still outstanding %d", statlist_count(&server->outstanding_requests));
+	workload_advance(server);
 	return true;
 }
 
@@ -1362,6 +1370,7 @@ void disconnect_server(PgSocket *server, bool send_term, const char *reason, ...
 		return;
 	}
 
+	workload_server_close(server);
 	va_start(ap, reason);
 	vsnprintf(buf, sizeof(buf), reason, ap);
 	va_end(ap);

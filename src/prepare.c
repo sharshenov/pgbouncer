@@ -341,6 +341,7 @@ bool handle_parse_command(PgSocket *client, PktHdr *pkt)
 	client_ps = create_client_prepared_statement(pp.name, ps);
 	if (client_ps == NULL)
 		goto oom;
+	client_ps->workload_statement_id = workload_current_statement_id(client);
 	HASH_ADD_STR(client->client_prepared_statements, stmt_name, client_ps);
 	if (uthash_alloc_failed) {
 		uthash_alloc_failed = false;
@@ -407,15 +408,19 @@ oom:
 	return false;
 }
 
-/*
- * Get the given prepared statement from the client hash map. This returns NULL
- * and closes the client connection if no prepared statement with this name
- * could not be found.
- */
-static PgClientPreparedStatement *get_client_prepared_statement(PgSocket *client, const char *name)
+/* A non-disconnecting lookup; keep the cache's hash policy in this module. */
+PgClientPreparedStatement *find_client_prepared_statement(PgSocket *client, const char *name)
 {
 	PgClientPreparedStatement *client_ps;
+
 	HASH_FIND_STR(client->client_prepared_statements, name, client_ps);
+	return client_ps;
+}
+
+static PgClientPreparedStatement *get_client_prepared_statement(PgSocket *client, const char *name)
+{
+	PgClientPreparedStatement *client_ps = find_client_prepared_statement(client, name);
+
 	if (!client_ps) {
 		slog_error(client, "prepared statement '%s' not found", name);
 		/*

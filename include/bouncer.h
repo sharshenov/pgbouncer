@@ -164,6 +164,7 @@ typedef struct PktHdr PktHdr;
 typedef struct PktBuf PktBuf;
 typedef struct ScramState ScramState;
 typedef struct PgPreparedStatement PgPreparedStatement;
+typedef struct OutstandingRequest OutstandingRequest;
 typedef enum ResponseAction ResponseAction;
 typedef enum ReplicationType ReplicationType;
 
@@ -184,6 +185,7 @@ extern int cf_sbuf_len;
 #include "proto.h"
 #include "objects.h"
 #include "stats.h"
+#include "workload.h"
 #include "janitor.h"
 #include "hba.h"
 #include "ldapauth.h"
@@ -639,6 +641,7 @@ struct PgDatabase {
 	unsigned active_stamp;	/* set if autodb has connections */
 	int connection_count;	/* total connections for this database in all pools */
 	int client_connection_count;	/* total client connections for this database */
+	struct WorkloadDatabase *workload_database;
 
 	struct AATree user_tree;	/* users that have been queried on this database */
 };
@@ -659,7 +662,7 @@ enum ResponseAction {
 	RA_FAKE,
 };
 
-typedef struct OutstandingRequest {
+struct OutstandingRequest {
 	struct List node;
 	char type;	/* The single character type of the request */
 	ResponseAction action;	/* What action to take (see comments on ResponseAction) */
@@ -671,7 +674,11 @@ typedef struct OutstandingRequest {
 	PgServerPreparedStatement *server_ps;
 
 	uint64_t server_ps_query_id;
-} OutstandingRequest;
+	struct WorkloadEvent workload;
+	uint64_t workload_statement_id;
+	uint64_t workload_bind_id;
+	uint64_t workload_epoch;
+};
 
 enum ReplicationType {
 	REPLICATION_NONE = 0,
@@ -699,6 +706,15 @@ struct PgSocket {
 
 	/* the queue of requests that we still expect a server response for */
 	struct StatList outstanding_requests;
+	struct WorkloadClient *workload_client;
+	struct WorkloadEvent *workload_running;
+	struct WorkloadEvent *workload_next_event;
+	OutstandingRequest *workload_blocker;
+	struct WorkloadTransaction workload_transaction;
+	struct WorkloadEvent workload_copy;
+	uint32_t workload_pending;
+	uint64_t workload_epoch;
+	uint64_t workload_discard_epoch;
 
 	SocketState state : 8;		/* this also specifies socket location */
 
