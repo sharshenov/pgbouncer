@@ -48,8 +48,10 @@ jobs:
       - name: Build and run baseline smoke
         run: |
           python3 dev/stand/stand.py build --variant candidate
-          python3 dev/stand/stand.py up --variant candidate
+          python3 dev/stand/stand.py metrics-build
+          python3 dev/stand/stand.py up --variant candidate --observe --workload-exporter
           python3 dev/stand/stand.py run --profile smoke --duration 10 --clients 8
+          python3 dev/stand/stand.py stats > dev/stand/results/observation.json
           python3 dev/stand/stand.py verify
       - name: Retain evidence
         if: always()

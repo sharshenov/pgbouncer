@@ -1,15 +1,19 @@
 """Self-contained Docker stand. Never accepts a database destination."""
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
+
+from dashboard import make_dashboard
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -40,6 +44,15 @@ def capture(args):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def dashboard_request(path):
+    password = (STATE / "password").read_text().strip()
+    token = base64.b64encode(("stand:" + password).encode()).decode()
+    return Request(
+        "http://127.0.0.1:26300" + path,
+        headers={"Authorization": "Basic " + token},
+    )
 
 
 def images():
@@ -178,14 +191,73 @@ def compose(*args):
     ]
 
 
-def prepare(variant, observe=False):
+def build_exporter():
+    deps = images()
+    directory = HERE / "exporter"
+    locked = json.loads((directory / "images.lock.json").read_text())
+    if set(locked) != {"go", "upstream_revision"}:
+        raise SystemExit("Invalid exporter dependency lock")
+    if "@sha256:" not in locked["go"] or not re.fullmatch(
+        r"[0-9a-f]{40}", locked["upstream_revision"]
+    ):
+        raise SystemExit("Exporter inputs must be immutable")
+    digest = hashlib.sha256()
+    for path in sorted(directory.iterdir()):
+        if path.is_file():
+            digest.update(path.name.encode() + b"\0" + path.read_bytes())
+    source = digest.hexdigest()
+    tag = f"pgobs-workload-exporter:{source[:12]}"
+    run(
+        [
+            "docker",
+            "build",
+            "-f",
+            directory / "Dockerfile",
+            "--build-arg",
+            f"GO_IMAGE={locked['go']}",
+            "--build-arg",
+            f"EXPORTER_IMAGE={deps['exporter']}",
+            "--build-arg",
+            f"UPSTREAM_REVISION={locked['upstream_revision']}",
+            "--build-arg",
+            f"SOURCE_DIGEST={source}",
+            "-t",
+            tag,
+            ROOT,
+        ]
+    )
+    STATE.mkdir(exist_ok=True)
+    write_json(
+        STATE / "workload-exporter.json",
+        {
+            "image": tag,
+            "image_id": capture(
+                ["docker", "image", "inspect", tag, "--format", "{{.Id}}"]
+            ),
+            "source_sha256": source,
+            "upstream_revision": locked["upstream_revision"],
+            "go_image": locked["go"],
+            "runtime_base": deps["exporter"],
+        },
+    )
+
+
+def prepare(variant, observe=False, workload_exporter=False):
     deps = images()
     if observe and variant != "candidate":
         raise SystemExit("Observation settings require a candidate build")
+    if workload_exporter and not observe:
+        raise SystemExit("Workload exporter qualification requires --observe")
     manifest_path = STATE / f"{variant}.json"
     if not manifest_path.exists():
         raise SystemExit(f"Build '{variant}' first")
     manifest = json.loads(manifest_path.read_text())
+    exporter = None
+    if workload_exporter:
+        exporter_file = STATE / "workload-exporter.json"
+        if not exporter_file.exists():
+            raise SystemExit("Run metrics-build before selecting the workload exporter")
+        exporter = json.loads(exporter_file.read_text())
     running = capture(
         [
             "docker",
@@ -289,12 +361,13 @@ def prepare(variant, observe=False):
             "ulimits": {"nofile": {"soft": 16384, "hard": 16384}},
         }
         services[f"exporter-{name}"] = {
-            "image": deps["exporter"],
+            "image": exporter["image_id"] if exporter else deps["exporter"],
             "command": [
                 "--pgBouncer.connectionString",
                 f"postgres://stand:{password}@proxy-{name}:6432/pgbouncer?sslmode=disable",
                 "--log.level=warn",
-            ],
+            ]
+            + (["--pgBouncer.include-workloads"] if exporter else []),
             "depends_on": {f"proxy-{name}": {"condition": "service_healthy"}},
             "cpus": 0.25,
             "mem_limit": "128m",
@@ -307,6 +380,14 @@ def prepare(variant, observe=False):
             "scrape_configs": [
                 {
                     "job_name": "stand",
+                    "metric_relabel_configs": [
+                        {
+                            "source_labels": ["database"],
+                            "regex": "(primary|secondary)",
+                            "target_label": "resource",
+                            "replacement": "synthetic-$1",
+                        }
+                    ],
                     "static_configs": [
                         {
                             "targets": [f"exporter-{n}:9127"],
@@ -337,6 +418,70 @@ def prepare(variant, observe=False):
         "cpus": 0.5,
         "mem_limit": "512m",
     }
+    if exporter:
+        dashboard_images = json.loads((HERE / "dashboard-images.lock.json").read_text())
+        if (
+            set(dashboard_images) != {"grafana"}
+            or "@sha256:" not in dashboard_images["grafana"]
+        ):
+            raise SystemExit("Dashboard image must be immutable")
+        dashboard = config / "grafana"
+        for directory in ("datasources", "dashboards", "panels"):
+            (dashboard / directory).mkdir(parents=True, exist_ok=True)
+        write_json(
+            dashboard / "datasources/stand.yaml",
+            {
+                "apiVersion": 1,
+                "datasources": [
+                    {
+                        "name": "Synthetic stand",
+                        "uid": "stand-prometheus",
+                        "type": "prometheus",
+                        "access": "proxy",
+                        "url": "http://prometheus:9090",
+                        "isDefault": True,
+                        "editable": False,
+                        "jsonData": {"timeInterval": "5s"},
+                    }
+                ],
+            },
+        )
+        write_json(
+            dashboard / "dashboards/stand.yaml",
+            {
+                "apiVersion": 1,
+                "providers": [
+                    {
+                        "name": "synthetic",
+                        "type": "file",
+                        "disableDeletion": True,
+                        "editable": False,
+                        "options": {"path": "/var/lib/grafana/dashboards"},
+                    }
+                ],
+            },
+        )
+        write_json(dashboard / "panels/workload.json", make_dashboard())
+        services["grafana"] = {
+            "image": dashboard_images["grafana"],
+            "environment": {
+                "GF_SECURITY_ADMIN_USER": "stand",
+                "GF_SECURITY_ADMIN_PASSWORD": password,
+                "GF_USERS_ALLOW_SIGN_UP": "false",
+                "GF_ANALYTICS_REPORTING_ENABLED": "false",
+                "GF_ANALYTICS_CHECK_FOR_UPDATES": "false",
+                "GF_PLUGINS_PREINSTALL_DISABLED": "true",
+            },
+            "volumes": [
+                f"{dashboard / 'datasources'}:/etc/grafana/provisioning/datasources:ro",
+                f"{dashboard / 'dashboards'}:/etc/grafana/provisioning/dashboards:ro",
+                f"{dashboard / 'panels'}:/var/lib/grafana/dashboards:ro",
+            ],
+            "networks": ["stand", "management"],
+            "ports": ["127.0.0.1:26300:3000"],
+            "cpus": 0.5,
+            "mem_limit": "512m",
+        }
     services["load"] = {
         "image": manifest["workload_image_id"],
         "profiles": ["tools"],
@@ -358,6 +503,11 @@ def prepare(variant, observe=False):
             "driver": "json-file",
             "options": {"max-size": "10m", "max-file": "3"},
         }
+    # Parent state stays private; synthetic-only config mounts must be readable
+    # by their unprivileged container users even under a restrictive host umask.
+    config.chmod(0o755)
+    for path in config.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
     write_json(
         STATE / "compose.json",
         {
@@ -366,7 +516,15 @@ def prepare(variant, observe=False):
             "volumes": {name: {} for name in ("db-a", "db-b", "metrics")},
         },
     )
-    write_json(STATE / "active.json", {**manifest, "observation_enabled": observe})
+    write_json(
+        STATE / "active.json",
+        {
+            **manifest,
+            "observation_enabled": observe,
+            "workload_exporter": exporter,
+            "grafana_image": dashboard_images["grafana"] if exporter else None,
+        },
+    )
 
 
 def workload(args):
@@ -426,6 +584,18 @@ def verify():
         "pgbouncer_up": "pgbouncer_up" + selector,
         "scrape_age_seconds": "time() - timestamp(pgbouncer_up" + selector + ")",
     }
+    if active.get("workload_exporter"):
+        expressions.update(
+            {
+                "workload_collection": "pgbouncer_workload_collection_success"
+                + selector,
+                "workload_enabled": "pgbouncer_workload_status_enabled" + selector,
+                "workload_allocations": "pgbouncer_workload_status_allocation_failures_total"
+                + selector,
+                "workload_age_seconds": "time() - pgbouncer_workload_last_success_timestamp_seconds"
+                + selector,
+            }
+        )
     for metric, expression in expressions.items():
         url = "http://127.0.0.1:26909/api/v1/query?" + urlencode({"query": expression})
         with opener.open(url, timeout=10) as response:
@@ -434,8 +604,11 @@ def verify():
             raise SystemExit(f"Missing collector targets for {metric}")
         healthy = (
             all(0 <= float(s["value"][1]) <= 15 for s in samples)
-            if metric == "scrape_age_seconds"
-            else all(s["value"][1] == "1" for s in samples)
+            if metric in ("scrape_age_seconds", "workload_age_seconds")
+            else all(
+                s["value"][1] == ("0" if metric == "workload_allocations" else "1")
+                for s in samples
+            )
         )
         if not healthy:
             raise SystemExit(f"Unhealthy collector targets for {metric}")
@@ -459,6 +632,14 @@ def verify():
             and container["Image"] != active["image_id"]
         ):
             raise SystemExit("Running proxy image does not match the active manifest")
+        if (
+            container["Name"].startswith("/pgobs-exporter-")
+            and active.get("workload_exporter")
+            and container["Image"] != active["workload_exporter"]["image_id"]
+        ):
+            raise SystemExit(
+                "Running workload exporter does not match the active manifest"
+            )
         limits[container["Name"]] = {
             "memory_bytes": config["Memory"],
             "cpu_quota": config["NanoCpus"] / 1e9,
@@ -468,6 +649,39 @@ def verify():
         "collectors": observations,
         "limits": limits,
     }
+    if active.get("grafana_image"):
+        with opener.open(
+            dashboard_request("/api/dashboards/uid/synthetic-workload-observation"),
+            timeout=10,
+        ) as response:
+            dashboard = json.load(response)["dashboard"]
+        expected = make_dashboard()
+
+        def queries(value):
+            return {
+                panel["id"]: [target["expr"] for target in panel.get("targets", [])]
+                for panel in value["panels"]
+            }
+
+        if dashboard["uid"] != expected["uid"] or queries(dashboard) != queries(
+            expected
+        ):
+            raise SystemExit(
+                "Provisioned synthetic dashboard does not match this checkout"
+            )
+        for panel in dashboard["panels"]:
+            for target in panel.get("targets", []):
+                expr = target["expr"].replace("$resource", ".*")
+                url = "http://127.0.0.1:26909/api/v1/query?" + urlencode(
+                    {"query": expr}
+                )
+                with opener.open(url, timeout=10) as response:
+                    if json.load(response).get("status") != "success":
+                        raise SystemExit("A provisioned dashboard expression failed")
+        report["dashboard"] = {
+            "uid": dashboard["uid"],
+            "panels": len(dashboard["panels"]),
+        }
     write_json(RESULTS / "verification.json", report)
     print(json.dumps(report, indent=2))
 
@@ -494,6 +708,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("lock")
+    sub.add_parser("metrics-build")
     p = sub.add_parser("build")
     p.add_argument("--variant", choices=VARIANTS, required=True)
     p.add_argument("--source", type=Path, default=ROOT)
@@ -502,6 +717,7 @@ def main():
     p = sub.add_parser("up")
     p.add_argument("--variant", choices=VARIANTS, required=True)
     p.add_argument("--observe", action="store_true")
+    p.add_argument("--workload-exporter", action="store_true")
     p = sub.add_parser("down")
     p.add_argument("--destroy-data", action="store_true")
     sub.add_parser("status")
@@ -528,10 +744,12 @@ def main():
     args = parser.parse_args()
     if args.action == "lock":
         lock_images()
+    elif args.action == "metrics-build":
+        build_exporter()
     elif args.action == "build":
         build(args)
     elif args.action == "up":
-        prepare(args.variant, args.observe)
+        prepare(args.variant, args.observe, args.workload_exporter)
         run(compose("up", "-d", "--wait", "--wait-timeout", "180"))
     elif args.action == "down":
         run(

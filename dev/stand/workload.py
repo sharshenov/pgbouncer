@@ -232,6 +232,7 @@ async def measure(args):
                 raise RuntimeError("Load generator missed the common start deadline")
             await asyncio.sleep(max(0, args.start_at - time.time()))
         args.began = time.monotonic()
+        began_unix = time.time()
         start.set()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=args.duration + 40)
     finally:
@@ -256,6 +257,8 @@ async def measure(args):
         "profile": args.profile,
         "prepared_mode": args.prepared_mode,
         "duration_seconds": elapsed,
+        "started_at_unix": began_unix,
+        "completed_at_unix": time.time(),
         "clients": args.clients,
         "requested_operations_per_second": args.rate,
         "successes": total,
@@ -296,6 +299,8 @@ def merge(reports):
         "profile": reports[0]["profile"],
         "prepared_mode": reports[0]["prepared_mode"],
         "duration_seconds": duration,
+        "started_at_unix": min(r["started_at_unix"] for r in reports),
+        "completed_at_unix": max(r["completed_at_unix"] for r in reports),
         "clients": sum(r["clients"] for r in reports),
         "requested_operations_per_second": sum(
             r["requested_operations_per_second"] for r in reports

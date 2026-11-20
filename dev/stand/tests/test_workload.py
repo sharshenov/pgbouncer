@@ -48,6 +48,8 @@ class HistogramTest(unittest.TestCase):
                     "profile": "smoke",
                     "prepared_mode": "unnamed",
                     "duration_seconds": 1,
+                    "started_at_unix": 100,
+                    "completed_at_unix": 101,
                     "clients": 1,
                     "requested_operations_per_second": count,
                     "successes": count,
