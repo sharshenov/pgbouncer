@@ -18,6 +18,14 @@
 
 bool get_ecdh_curve_nid(EVP_PKEY *pk, int *nid);
 
+/* OpenSSL 4 returns const certificate data; older reader APIs need mutable
+* arguments. Match those APIs without casting borrowed certificate data. */
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L && !defined(LIBRESSL_VERSION_NUMBER)
+#define TLS_CERT_CONST const
+#else
+#define TLS_CERT_CONST
+#endif
+
 /* OpenSSL 1.1+ has hidden struct fields */
 #if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 

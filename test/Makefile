@@ -9,12 +9,16 @@ SUBLOC = test
 DIST_SUBDIRS = ssl
 
 
-noinst_PROGRAMS = hba_test
+noinst_PROGRAMS = hba_test workload_tags_test
 hba_test_CPPFLAGS = -I../include $(LIBEVENT_CFLAGS)
 hba_test_LDADD = $(LIBEVENT_LIBS) $(TLS_LIBS)
 hba_test_CFLAGS = -O0
 hba_test_SOURCES = hba_test.c ../src/hba.c ../src/util.c
 hba_test_EMBED_LIBUSUAL = 1
+
+workload_tags_test_CPPFLAGS = -I../include
+workload_tags_test_SOURCES = workload_tags_test.c ../src/workload_tags.c
+workload_tags_test_EMBED_LIBUSUAL = 1
 
 EXTRA_PROGRAMS = asynctest
 asynctest_CPPFLAGS = -I../include $(PG_CPPFLAGS) $(LIBEVENT_CFLAGS)
@@ -31,3 +35,4 @@ include ../lib/mk/antimake.mk
 
 check: all
 	./hba_test
+	./workload_tags_test

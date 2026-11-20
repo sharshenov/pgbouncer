@@ -389,6 +389,8 @@ static bool send_pending_fake_responses(PgSocket *server, PgSocket *client)
 			break;
 
 		statlist_pop(&server->outstanding_requests);
+		workload_request_finish(server, request, WORKLOAD_SKIPPED);
+		workload_advance(server);
 		server->sbuf.extra_packet_queue_after = true;
 
 		if (!queue_fake_response(client, request->type)) {
@@ -436,12 +438,16 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 		if (!mbuf_get_char(&pkt->data, &state))
 			return false;
 
+		workload_copy_finish(server);
+		if (state == 'I')
+			workload_transaction_end(server, false);
 		if (!pop_outstanding_request(server, (char[]) {PqMsg_Sync, PqMsg_Query, PqMsg_FunctionCall, '\0'}, &ignore_packet)
 		    && server->query_failed) {
 			if (!clear_outstanding_requests_until(server, (char[]) {PqMsg_Sync, '\0'}))
 				return false;
 		}
 		server->query_failed = false;
+		workload_advance(server);
 
 		/* set ready only if no tx */
 		if (state == 'I') {
@@ -470,6 +476,7 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 	 * it later.
 	 */
 	case PqMsg_ErrorResponse:
+		workload_server_error(server);
 		if (server->setting_vars) {
 			/*
 			 * the SET and user query will be different TX
@@ -518,6 +525,7 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 		break;
 
 	case PqMsg_CommandComplete:
+		workload_copy_command_complete(server);
 		/* ErrorResponse and CommandComplete show end of copy mode */
 		if (server->copy_mode) {
 			slog_debug(server, "COPY finished");
@@ -570,12 +578,14 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 	/* copy mode */
 	case PqMsg_CopyInResponse:
 	case PqMsg_CopyBothResponse:
+		workload_copy_start(server);
 		slog_debug(server, "COPY started");
 		server->copy_mode = true;
 		if (client)
 			client->copy_mode = true;
 		break;
 	case PqMsg_CopyOutResponse:
+		workload_copy_start(server);
 		break;
 	/* chat packets */
 	case PqMsg_ParseComplete:

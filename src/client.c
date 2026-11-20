@@ -1636,6 +1636,8 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
 	}
 
 
+	workload_inspect_packet(client, pkt);
+
 	/* update stats */
 	if (!client->query_start) {
 		client->pool->stats.query_count++;

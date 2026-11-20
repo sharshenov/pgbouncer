@@ -57,10 +57,10 @@ def comment(client, sequence):
     # Production-shaped, but fabricated team/caller values and no copied SQL/data.
     team = f"synthetic-team-{client % 4}"
     caller = f"Synthetic::Workers::Workload{client % 32}"
-    return f"/*caller='{quote(caller, safe='')}',team='{team}',trace_id='synthetic-{client}'*/ "
+    return f"/*caller='{quote(caller, safe='')}',team='{team}',trace_id='synthetic-{client}-{sequence}'*/ "
 
 
-async def connect(host, database):
+async def connect(host, database, prepared_mode):
     # No arbitrary connection string, environment PGHOST, service, or hostaddr.
     return await psycopg.AsyncConnection.connect(
         host=host,
@@ -72,14 +72,14 @@ async def connect(host, database):
         sslmode="disable",
         connect_timeout=10,
         autocommit=True,
-        prepare_threshold=5,
+        prepare_threshold=5 if prepared_mode == "named" else None,
     )
 
 
 async def initialize():
     # Both aliases connect to different stand-only backend containers.
     for database in DATABASES:
-        async with await connect(HOSTS[0], database) as conn:
+        async with await connect(HOSTS[0], database, "unnamed") as conn:
             await conn.execute(
                 "CREATE TABLE IF NOT EXISTS synthetic_items (id int PRIMARY KEY, value int NOT NULL)"
             )
@@ -148,7 +148,7 @@ async def worker(index, args, ready, start, results):
         notices += 1
 
     try:
-        conn = await connect(host, database)
+        conn = await connect(host, database, args.prepared_mode)
     except Exception as exc:
         ready.set_exception(exc)
         raise
@@ -160,6 +160,7 @@ async def worker(index, args, ready, start, results):
         deadline = began + args.duration
         sequence = 0
         interval = args.clients / args.rate if args.rate else 0
+        stable_tag = comment(identity, 0)
         while time.monotonic() < deadline:
             scheduled = (
                 began + index / args.rate + sequence * interval
@@ -184,9 +185,12 @@ async def worker(index, args, ready, start, results):
             scheduling_lag.observe(max(0, now - scheduled))
             try:
                 key = rng.randint(1, 100000)
-                messages += await operation(
-                    conn, args.profile, rng, comment(identity, sequence), key
+                tag = (
+                    stable_tag
+                    if args.prepared_mode == "named"
+                    else comment(identity, sequence)
                 )
+                messages += await operation(conn, args.profile, rng, tag, key)
                 successes += 1
             except psycopg.Error as exc:
                 if isinstance(exc, psycopg.ProgrammingError) and exc.sqlstate is None:
@@ -250,6 +254,7 @@ async def measure(args):
     total = sum(r["successes"] for r in results)
     report = {
         "profile": args.profile,
+        "prepared_mode": args.prepared_mode,
         "duration_seconds": elapsed,
         "clients": args.clients,
         "requested_operations_per_second": args.rate,
@@ -289,6 +294,7 @@ def merge(reports):
     successes = sum(r["successes"] for r in reports)
     return {
         "profile": reports[0]["profile"],
+        "prepared_mode": reports[0]["prepared_mode"],
         "duration_seconds": duration,
         "clients": sum(r["clients"] for r in reports),
         "requested_operations_per_second": sum(
@@ -361,6 +367,9 @@ if __name__ == "__main__":
     parser.add_argument("--clients", type=int, required=True)
     parser.add_argument("--rate", type=int, default=0)
     parser.add_argument("--processes", type=int, default=1)
+    parser.add_argument(
+        "--prepared-mode", choices=("unnamed", "named"), default="unnamed"
+    )
     parser.add_argument("--output", type=Path, required=True)
     options = parser.parse_args()
     if options.duration <= 0 or not 1 <= options.clients <= 4000 or options.rate < 0:

@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import psycopg
 import pytest
 
-from .utils import USE_SUDO
+from .utils import USE_SUDO, wait_until
 
 
 @pytest.mark.parametrize(
@@ -61,18 +61,39 @@ async def test_query_wait_timeout(
     bouncer.default_db = "postgres"
     bouncer.default_user = "puser1"
 
+    async def start_blocker(duration):
+        task = bouncer.asleep(duration)
+
+        async def wait_running():
+            while True:
+                active = await bouncer.pg.asql(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    "WHERE usename = %s AND state = 'active' AND query = %s)",
+                    params=(bouncer.default_user, f"select pg_sleep({duration})"),
+                )
+                if active[0][0]:
+                    return
+                if task.done():
+                    await task
+                    raise AssertionError("Blocker finished before it became observable")
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(wait_running(), timeout=5)
+        return task
+
     with bouncer.run_with_config(pgbouncer_ini):
-        conn_1_fut = bouncer.asleep(3)
-        await asyncio.sleep(0.1)
+        conn_1_fut = await start_blocker(4)
+        try:
+            with pytest.raises(psycopg.OperationalError, match=r"query_wait_timeout"):
+                await bouncer.atest()
+        finally:
+            await conn_1_fut
 
-        with pytest.raises(psycopg.OperationalError, match=r"query_wait_timeout"):
-            bouncer.test()
-        await conn_1_fut
-
-        conn_1_fut = bouncer.asleep(1)
-        await asyncio.sleep(0.1)
-        bouncer.test()
-        await conn_1_fut
+        conn_1_fut = await start_blocker(1)
+        try:
+            await bouncer.atest()
+        finally:
+            await conn_1_fut
 
 
 def test_server_lifetime(pg, bouncer):
@@ -555,8 +576,8 @@ def test_pool_idle_timeout(pg, bouncer):
     bouncer.admin("set pool_idle_timeout=1")
     bouncer.admin("set server_idle_timeout=1")
 
-    bouncer.test()
-    assert pg.connection_count() == 1
+    backend_pid = bouncer.sql_value("SELECT pg_backend_pid()")
+    assert len(bouncer.admin("SHOW SERVERS")) == 1
 
     # The non-admin pool exists after connecting. Column 0 of SHOW POOLS is
     # the database, and there's always an admin ("pgbouncer") pool.
@@ -572,10 +593,19 @@ def test_pool_idle_timeout(pg, bouncer):
     print("pools after idle timeout:", pools_after)
     assert all(row[0] == "pgbouncer" for row in pools_after)
 
-    assert pg.connection_count() == 0
+    # Backend teardown from another test can lag behind proxy teardown.
+    # Check this pool's actual backend, not every shared-fixture user.
+    for _ in wait_until("Idle pool backend did not disconnect"):
+        remaining = pg.sql_value(
+            "SELECT count(*) FROM pg_stat_activity WHERE pid = %s",
+            params=(backend_pid,),
+        )
+        if remaining == 0:
+            break
 
-    bouncer.test()
-    assert pg.connection_count() == 1
+    replacement_pid = bouncer.sql_value("SELECT pg_backend_pid()")
+    assert replacement_pid != backend_pid
+    assert len(bouncer.admin("SHOW SERVERS")) == 1
 
 
 def test_pool_idle_timeout_ignores_min_pool_size(pg, bouncer):

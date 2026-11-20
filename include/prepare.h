@@ -21,6 +21,7 @@ typedef struct PgPreparedStatement {
 typedef struct PgClientPreparedStatement {
 	UT_hash_handle hh;
 	PgPreparedStatement *ps;
+	uint64_t workload_statement_id;
 	char stmt_name[];	/* varying size */
 } PgClientPreparedStatement;
 
@@ -36,6 +37,7 @@ typedef struct PgServerPreparedStatement {
 
 
 bool handle_parse_command(PgSocket *client, PktHdr *pkt);
+PgClientPreparedStatement *find_client_prepared_statement(PgSocket *client, const char *name);
 bool handle_bind_command(PgSocket *client, PktHdr *pkt);
 bool handle_describe_command(PgSocket *client, PktHdr *pkt);
 bool handle_close_statement_command(PgSocket *client, PktHdr *pkt, PgClosePacket *close_packet);

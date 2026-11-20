@@ -38,12 +38,21 @@ python3 dev/stand/stand.py down    # retains only this project's data
 ```
 
 The initial checkout is upstream `ac3bb6d748cefc9470c2c66e061549a59a072ce3`.
+Once feature sources change, supply a separate clean checkout with `--source`
+when building the upstream comparison; the source guard rejects modified
+baselines even if they still have the upstream commit as an ancestor.
 Dependency images are pinned in `images.lock.json`. To refresh deliberately,
 remove that lock and run `python3 dev/stand/stand.py lock`, then review the diff.
 Build that exact source separately with `--source` once candidate changes exist.
 Use `--variant candidate` for feature source; `--variant legacy` builds release
 1.22.1 at its pinned commit. Switch only after `down`. Each result records the
 source digest, build system, immutable local image ID, and dependency digests.
+
+For a candidate implementing observation, explicitly enable it with
+`up --variant candidate --observe`. Run `stand.py stats` to collect both proxies'
+workload SQL snapshots and status into an artifact-linked JSON report. Baseline
+images never receive candidate-only configuration. This is a stand collector,
+not the production exporter extension.
 
 Build and execute upstream tests in isolated containers:
 
@@ -62,7 +71,13 @@ Never use it until results needed for comparison have been retained.
 
 `throughput` measures indexed point reads, `mixed` adds updates, short explicit
 transactions and slow work, and `occupancy` creates controlled active backend
-occupancy. Names and tags are fabricated. Prepared statement reuse is exercised.
+occupancy. Names and tags are fabricated.
+
+The default `--prepared-mode unnamed` disables named prepared-statement caching
+and varies unrelated trace tags, matching the application's configuration shape.
+Use `--prepared-mode named` to exercise prepared-statement reuse with stable
+comments. Reports identify the mode; the initial stand capacity measurements
+used named reuse and are not an unnamed-protocol qualification.
 
 `--rate` is **operations/s**, not SQL messages/s. A mixed transaction uses four
 SQL messages. Results report both counts. Rate zero is closed-loop saturation;

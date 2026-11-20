@@ -178,16 +178,27 @@ def compose(*args):
     ]
 
 
-def prepare(variant):
+def prepare(variant, observe=False):
     deps = images()
+    if observe and variant != "candidate":
+        raise SystemExit("Observation settings require a candidate build")
     manifest_path = STATE / f"{variant}.json"
     if not manifest_path.exists():
         raise SystemExit(f"Build '{variant}' first")
     manifest = json.loads(manifest_path.read_text())
-    if (STATE / "compose.json").exists():
-        running = capture(compose("ps", "--status", "running", "--quiet"))
-        if running:
-            raise SystemExit("Stand is running; use down before changing its variant")
+    running = capture(
+        [
+            "docker",
+            "ps",
+            "--quiet",
+            "--filter",
+            f"label=com.docker.compose.project={PROJECT}",
+        ]
+    )
+    if running:
+        raise SystemExit(
+            "Stand is running; use its owning checkout to stop it before changing variants"
+        )
     STATE.mkdir(exist_ok=True)
     STATE.chmod(0o700)
     RESULTS.mkdir(exist_ok=True)
@@ -212,7 +223,8 @@ def prepare(variant):
             "max_client_conn=4000\ndefault_pool_size=75\nmin_pool_size=0\n"
             "max_prepared_statements=200\nquery_wait_timeout=30\n"
             "ignore_startup_parameters=extra_float_digits\n"
-            "unix_socket_dir=/tmp\npidfile=/tmp/pgbouncer.pid\n"
+            + ("workload_observation=1\nworkload_stats_max=1000\n" if observe else "")
+            + "unix_socket_dir=/tmp\npidfile=/tmp/pgbouncer.pid\n"
             "log_connections=0\nlog_disconnections=0\n"
         )
     services = {}
@@ -330,7 +342,11 @@ def prepare(variant):
         "profiles": ["tools"],
         "entrypoint": ["python3", "/workload.py"],
         "environment": {"STAND_PASSWORD": password},
-        "volumes": [f"{RESULTS}:/results", f"{HERE / 'workload.py'}:/workload.py:ro"],
+        "volumes": [
+            f"{RESULTS}:/results",
+            f"{HERE / 'workload.py'}:/workload.py:ro",
+            f"{HERE / 'observe.py'}:/observe.py:ro",
+        ],
         "cpus": 4,
         "mem_limit": "2g",
         "user": f"{os.getuid()}:{os.getgid()}",
@@ -350,7 +366,7 @@ def prepare(variant):
             "volumes": {name: {} for name in ("db-a", "db-b", "metrics")},
         },
     )
-    write_json(STATE / "active.json", manifest)
+    write_json(STATE / "active.json", {**manifest, "observation_enabled": observe})
 
 
 def workload(args):
@@ -378,6 +394,8 @@ def workload(args):
                 f"/results/{output}",
                 "--processes",
                 args.processes,
+                "--prepared-mode",
+                args.prepared_mode,
             )
         ],
         check=False,
@@ -454,6 +472,24 @@ def verify():
     print(json.dumps(report, indent=2))
 
 
+def stats():
+    manifest = json.loads((STATE / "active.json").read_text())
+    if not manifest.get("observation_enabled"):
+        raise SystemExit(
+            "Start a candidate with --observe before collecting workload statistics"
+        )
+    raw = capture(
+        compose(
+            "run", "--rm", "--no-deps", "--entrypoint", "python3", "load", "/observe.py"
+        )
+    )
+    result = json.loads(raw)
+    result["artifact"] = manifest
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    write_json(RESULTS / f"observation-{stamp}.json", result)
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -465,10 +501,12 @@ def main():
     p.add_argument("--build-system", choices=("autoconf", "meson"), default="autoconf")
     p = sub.add_parser("up")
     p.add_argument("--variant", choices=VARIANTS, required=True)
+    p.add_argument("--observe", action="store_true")
     p = sub.add_parser("down")
     p.add_argument("--destroy-data", action="store_true")
     sub.add_parser("status")
     sub.add_parser("verify")
+    sub.add_parser("stats")
     p = sub.add_parser("run")
     p.add_argument(
         "--profile",
@@ -484,6 +522,7 @@ def main():
         help="Total scheduled operations/s; 0 is closed-loop",
     )
     p.add_argument("--processes", type=int, default=1, choices=range(1, 5))
+    p.add_argument("--prepared-mode", choices=("unnamed", "named"), default="unnamed")
     p = sub.add_parser("test")
     p.add_argument("--build-system", choices=("autoconf", "meson"), default="autoconf")
     args = parser.parse_args()
@@ -492,7 +531,7 @@ def main():
     elif args.action == "build":
         build(args)
     elif args.action == "up":
-        prepare(args.variant)
+        prepare(args.variant, args.observe)
         run(compose("up", "-d", "--wait", "--wait-timeout", "180"))
     elif args.action == "down":
         run(
@@ -506,6 +545,8 @@ def main():
         run(compose("ps"))
     elif args.action == "verify":
         verify()
+    elif args.action == "stats":
+        stats()
     elif args.action == "run":
         workload(args)
     elif args.action == "test":
