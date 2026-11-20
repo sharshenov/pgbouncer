@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import psycopg
 import pytest
 
-from .utils import USE_SUDO
+from .utils import USE_SUDO, wait_until
 
 
 @pytest.mark.parametrize(
@@ -576,8 +576,8 @@ def test_pool_idle_timeout(pg, bouncer):
     bouncer.admin("set pool_idle_timeout=1")
     bouncer.admin("set server_idle_timeout=1")
 
-    bouncer.test()
-    assert pg.connection_count() == 1
+    backend_pid = bouncer.sql_value("SELECT pg_backend_pid()")
+    assert len(bouncer.admin("SHOW SERVERS")) == 1
 
     # The non-admin pool exists after connecting. Column 0 of SHOW POOLS is
     # the database, and there's always an admin ("pgbouncer") pool.
@@ -593,10 +593,19 @@ def test_pool_idle_timeout(pg, bouncer):
     print("pools after idle timeout:", pools_after)
     assert all(row[0] == "pgbouncer" for row in pools_after)
 
-    assert pg.connection_count() == 0
+    # Backend teardown from another test can lag behind proxy teardown.
+    # Check this pool's actual backend, not every shared-fixture user.
+    for _ in wait_until("Idle pool backend did not disconnect"):
+        remaining = pg.sql_value(
+            "SELECT count(*) FROM pg_stat_activity WHERE pid = %s",
+            params=(backend_pid,),
+        )
+        if remaining == 0:
+            break
 
-    bouncer.test()
-    assert pg.connection_count() == 1
+    replacement_pid = bouncer.sql_value("SELECT pg_backend_pid()")
+    assert replacement_pid != backend_pid
+    assert len(bouncer.admin("SHOW SERVERS")) == 1
 
 
 def test_pool_idle_timeout_ignores_min_pool_size(pg, bouncer):
