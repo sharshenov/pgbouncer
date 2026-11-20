@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 STAND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(STAND))
 SPEC = importlib.util.spec_from_file_location("stand_controller", STAND / "stand.py")
 stand = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(stand)
@@ -76,6 +78,10 @@ class ControllerTest(unittest.TestCase):
         self.assertNotIn("auth_type=trust", config)
         self.assertEqual((self.state / "password").stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+        prom = json.loads((self.state / "config/prometheus.json").read_text())
+        relabel = prom["scrape_configs"][0]["metric_relabel_configs"][0]
+        self.assertEqual(relabel["source_labels"], ["database"])
+        self.assertEqual(relabel["regex"], "(primary|secondary)")
 
     def test_password_is_stable_between_restarts(self):
         self.prepare()
@@ -83,6 +89,18 @@ class ControllerTest(unittest.TestCase):
         with patch.object(stand, "capture", return_value=""):
             self.prepare()
         self.assertEqual((self.state / "password").read_text(), first)
+
+    def test_config_mount_permissions_do_not_depend_on_host_umask(self):
+        previous = os.umask(0o077)
+        try:
+            self.prepare()
+        finally:
+            os.umask(previous)
+        self.assertEqual((self.state / "config").stat().st_mode & 0o777, 0o755)
+        self.assertEqual(
+            (self.state / "config/prometheus.json").stat().st_mode & 0o777, 0o644
+        )
+        self.assertEqual((self.state / "password").stat().st_mode & 0o777, 0o600)
 
     def test_cannot_switch_variant_while_running(self):
         self.prepare()
@@ -150,6 +168,49 @@ class ControllerTest(unittest.TestCase):
         self.prepare()
         with self.assertRaisesRegex(SystemExit, "--observe"):
             stand.stats()
+
+    def test_dashboard_authentication_uses_only_the_loopback_endpoint(self):
+        self.prepare()
+        request = stand.dashboard_request("/api/health")
+        self.assertEqual(request.full_url, "http://127.0.0.1:26300/api/health")
+        self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+
+    def test_workload_exporter_requires_observation(self):
+        with (
+            patch.object(stand, "images", return_value=self.dependencies),
+            self.assertRaisesRegex(SystemExit, "--observe"),
+        ):
+            stand.prepare("candidate", workload_exporter=True)
+
+    def test_workload_exporter_requires_a_built_artifact(self):
+        (self.state / "candidate.json").write_text(
+            json.dumps({**self.manifest, "variant": "candidate"})
+        )
+        with (
+            patch.object(stand, "images", return_value=self.dependencies),
+            self.assertRaisesRegex(SystemExit, "metrics-build"),
+        ):
+            stand.prepare("candidate", observe=True, workload_exporter=True)
+
+    def test_workload_exporter_is_opt_in_and_immutable(self):
+        (self.state / "candidate.json").write_text(
+            json.dumps({**self.manifest, "variant": "candidate"})
+        )
+        exporter = {"image_id": "sha256:" + "d" * 64}
+        (self.state / "workload-exporter.json").write_text(json.dumps(exporter))
+        with patch.object(stand, "images", return_value=self.dependencies):
+            stand.prepare("candidate", observe=True, workload_exporter=True)
+        config = json.loads((self.state / "compose.json").read_text())
+        for name in ("a", "b"):
+            service = config["services"][f"exporter-{name}"]
+            self.assertEqual(service["image"], exporter["image_id"])
+            self.assertIn("--pgBouncer.include-workloads", service["command"])
+        active = json.loads((self.state / "active.json").read_text())
+        self.assertEqual(active["workload_exporter"], exporter)
+        grafana = config["services"]["grafana"]
+        self.assertEqual(grafana["ports"], ["127.0.0.1:26300:3000"])
+        self.assertEqual(grafana["networks"], ["stand", "management"])
+        self.assertEqual(grafana["environment"]["GF_USERS_ALLOW_SIGN_UP"], "false")
 
     def test_verify_rejects_published_sql_ports(self):
         self.prepare()

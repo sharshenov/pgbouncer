@@ -4,6 +4,8 @@ venv
 env
 build
 .objs
+uncrustify
+.ruff_cache
 dev/stand/.state
 dev/stand/results
 **/__pycache__

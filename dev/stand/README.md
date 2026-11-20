@@ -9,11 +9,14 @@ not a production deployment and does not copy production schemas or rows.
   external networks, mount application secrets, or pass production DSNs.
 - Two disposable PostgreSQL servers, two transaction-pooling proxies, two exporter
   instances, Prometheus, and an ephemeral load-generator container.
-- Only Prometheus `26909` is published, on **127.0.0.1**, through a separate
+- In baseline mode, only Prometheus `26909` is published, on **127.0.0.1**, through a separate
   management network. Databases, proxies, exporters, and load generators stay
   entirely on the internal network, without externally published SQL ports.
   Administrative/test SQL clients must run inside that network. Internal-only
   Docker networks do not reliably support host port publication.
+- With the workload exporter enabled, a provisioned Grafana UI is additionally
+  available on **127.0.0.1:26300**. It uses the stand-only admin credential
+  (`stand` / the generated password in `.state/password`), not anonymous access.
 - Explicit per-service CPU/memory limits. Databases use named volumes; state and
   generated stand-only credentials live in ignored `.state/`. Do not publish it.
 - The load driver accepts no database destination. Its only targets are the
@@ -53,6 +56,26 @@ For a candidate implementing observation, explicitly enable it with
 workload SQL snapshots and status into an artifact-linked JSON report. Baseline
 images never receive candidate-only configuration. This is a stand collector,
 not the production exporter extension.
+
+The opt-in sidecar extension can be built and selected explicitly:
+
+```sh
+python3 dev/stand/stand.py metrics-build
+python3 dev/stand/stand.py up --variant candidate --observe --workload-exporter
+python3 dev/stand/stand.py verify
+```
+
+Run `down` before switching a running stand. The extension uses the existing
+exporter's metric descriptors/conversion and separate bounded admin sessions,
+with workload schema/value checks and collection-health/freshness metrics.
+See [exporter/README.md](exporter/README.md) for metric semantics and boundaries.
+The provisioned synthetic dashboard gates consumption panels on both expected
+collectors being healthy, enabled, fresh, and free of reported allocation faults.
+Resource mapping is explicitly synthetic; apply the real deployment's physical
+resource mapping before reusing any queries outside the stand.
+`verify` checks collector freshness, schema health, enabled observation, allocation
+faults, immutable runtime images, and the provisioned dashboard's actual query
+definitions; all panel expressions are evaluated against the stand datasource.
 
 Build and execute upstream tests in isolated containers:
 

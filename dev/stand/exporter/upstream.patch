@@ -1,0 +1,12 @@
+diff --git a/pgbouncer_exporter.go b/pgbouncer_exporter.go
+--- a/pgbouncer_exporter.go
++++ b/pgbouncer_exporter.go
+@@ -64,0 +65,8 @@ func main() {
++	if *includeWorkloadMetrics {
++		workloadDB, err := newWorkloadDatabase(connectionString)
++		if err != nil {
++			level.Error(logger).Log("msg", "invalid workload connection configuration", "err", err)
++			os.Exit(1)
++		}
++		prometheus.MustRegister(newWorkloadCollector(workloadDB, logger))
++	}
